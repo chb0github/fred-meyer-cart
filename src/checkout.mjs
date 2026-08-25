@@ -16,7 +16,7 @@ function ensureDirs() {
 }
 
 /**
- * Extracts active session cookies directly from the user's personal Firefox profile
+ * Extracts active session cookies directly from personal Firefox profile
  */
 export function getPersonalFirefoxCookies() {
   const baseDir = path.join(os.homedir(), "Library/Application Support/Firefox/Profiles");
@@ -31,7 +31,8 @@ export function getPersonalFirefoxCookies() {
     const tmpDb = `/tmp/fm_cookies_${profileName}.sqlite`;
     try {
       fs.copyFileSync(cookiesDb, tmpDb);
-      const query = `SELECT host, name, value, path, isSecure, isHttpOnly, expiry, sameSite FROM moz_cookies WHERE host LIKE '\''%kroger%'\'' OR host LIKE '\''%fredmeyer%'\'';`;
+      const query =
+        "SELECT host, name, value, path, isSecure, isHttpOnly, expiry, sameSite FROM moz_cookies WHERE host LIKE \x27%kroger%\x27 OR host LIKE \x27%fredmeyer%\x27;";
       const output = execSync(`sqlite3 "${tmpDb}" "${query}"`, { encoding: "utf-8" });
 
       const cookies = [];
@@ -91,6 +92,39 @@ export async function dismissModalsAndBanners(page) {
     });
     await page.waitForTimeout(500);
   } catch {}
+}
+
+/**
+ * Removes all items from the active Fred Meyer cart
+ */
+export async function clearCart(page) {
+  try {
+    log("🧹 Clearing existing items from cart...");
+    await dismissModalsAndBanners(page);
+    
+    // Find all remove/delete buttons
+    const removeSelectors = [
+      'button[aria-label*="Remove" i]',
+      'button[data-testid*="remove" i]',
+      'button:has-text("Remove")',
+      'button:has-text("Save for Later")'
+    ];
+
+    for (const sel of removeSelectors) {
+      const btns = await page.$$(sel);
+      for (const btn of btns) {
+        try {
+          if (await btn.isVisible()) {
+            await btn.click();
+            await page.waitForTimeout(400);
+          }
+        } catch {}
+      }
+    }
+    log("✓ Existing items cleared.");
+  } catch (err) {
+    log(`⚠️ Could not clear cart: ${err.message}`);
+  }
 }
 
 /**
