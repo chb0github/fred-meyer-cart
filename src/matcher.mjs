@@ -125,18 +125,40 @@ export async function matchItem(item, locationId, preference = null) {
 }
 
 /**
- * Match an entire list of parsed items against Fred Meyer store inventory
+ * Concurrency worker pool for parallel async operations
+ */
+async function mapConcurrent(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let currentIndex = 0;
+
+  const poolSize = Math.min(concurrency, items.length);
+  const workers = Array.from({ length: poolSize }, async () => {
+    while (currentIndex < items.length) {
+      const idx = currentIndex++;
+      results[idx] = await fn(items[idx], idx);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Match an entire list of parsed items in parallel against Fred Meyer store inventory
  */
 export async function matchShoppingList(parsedItems, locationId, options = {}, onProgress = null) {
   const preference = options.preference || options.prefer || null;
-  const results = [];
-  for (let i = 0; i < parsedItems.length; i++) {
-    const item = parsedItems[i];
-    if (onProgress) {
-      onProgress(i + 1, parsedItems.length, item);
-    }
+  const concurrency = options.concurrency || 10;
+  let completed = 0;
+
+  const results = await mapConcurrent(parsedItems, concurrency, async (item, idx) => {
     const match = await matchItem(item, locationId, preference);
-    results.push(match);
-  }
+    completed++;
+    if (onProgress) {
+      onProgress(completed, parsedItems.length, item);
+    }
+    return match;
+  });
+
   return results;
 }

@@ -7,12 +7,13 @@ const TOKEN_ENDPOINT = "https://api.kroger.com/v1/connect/oauth2/token";
 const AUTH_ENDPOINT = "https://api.kroger.com/v1/connect/oauth2/authorize";
 
 let clientTokenCache = null;
+let pendingClientTokenPromise = null;
 
 function getAuthHeader() {
   const creds = getNetrcCredentials();
   if (!creds) {
     throw new Error(
-      "Missing Kroger credentials in ~/.netrc for machine api.kroger.com"
+      "Missing Kroger credentials in .netrc for machine api.kroger.com"
     );
   }
   return "Basic " + Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString("base64");
@@ -20,32 +21,45 @@ function getAuthHeader() {
 
 /**
  * Fetch a Client Credentials token (for public product search & locations)
+ * Shares a single pending promise so concurrent requests never duplicate token calls.
  */
 export async function getClientToken() {
   if (clientTokenCache && clientTokenCache.expiresAt > Date.now() + 60000) {
     return clientTokenCache.accessToken;
   }
 
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Authorization": getAuthHeader()
-    },
-    body: "grant_type=client_credentials&scope=product.compact"
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to obtain client token (${res.status}): ${errorText}`);
+  if (pendingClientTokenPromise) {
+    return pendingClientTokenPromise;
   }
 
-  const data = await res.json();
-  clientTokenCache = {
-    accessToken: data.access_token,
-    expiresAt: Date.now() + (data.expires_in - 30) * 1000
-  };
-  return clientTokenCache.accessToken;
+  pendingClientTokenPromise = (async () => {
+    try {
+      const res = await fetch(TOKEN_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Authorization": getAuthHeader()
+        },
+        body: "grant_type=client_credentials&scope=product.compact"
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Failed to obtain client token (${res.status}): ${errorText}`);
+      }
+
+      const data = await res.json();
+      clientTokenCache = {
+        accessToken: data.access_token,
+        expiresAt: Date.now() + (data.expires_in - 30) * 1000
+      };
+      return clientTokenCache.accessToken;
+    } finally {
+      pendingClientTokenPromise = null;
+    }
+  })();
+
+  return pendingClientTokenPromise;
 }
 
 /**
@@ -183,7 +197,6 @@ export async function authenticateCustomer() {
       console.log(`If the browser did not open automatically, open this URL:`);
       console.log(`\x1b[36m${authUrl}\x1b[0m\n`);
 
-      // Attempt to open default browser on macOS / Linux / Windows
       if (process.platform === "darwin") {
         exec(`open "${authUrl}"`);
       } else if (process.platform === "win32") {
