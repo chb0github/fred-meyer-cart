@@ -1,10 +1,10 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
-import readline from "readline";
-import { chromium } from "playwright";
+import { execSync } from "child_process";
+import { webkit } from "playwright";
 import { PROJECT_ROOT } from "./config.mjs";
 
-export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
 
 function log(msg = "") {
@@ -12,8 +12,55 @@ function log(msg = "") {
 }
 
 function ensureDirs() {
-  if (!fs.existsSync(BROWSER_PROFILE_DIR)) fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
   if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+}
+
+/**
+ * Extracts active session cookies directly from the user's personal Firefox profile
+ */
+export function getPersonalFirefoxCookies() {
+  const baseDir = path.join(os.homedir(), "Library/Application Support/Firefox/Profiles");
+  if (!fs.existsSync(baseDir)) return [];
+
+  let bestCookies = [];
+
+  for (const profileName of fs.readdirSync(baseDir)) {
+    const cookiesDb = path.join(baseDir, profileName, "cookies.sqlite");
+    if (!fs.existsSync(cookiesDb)) continue;
+
+    const tmpDb = `/tmp/fm_cookies_${profileName}.sqlite`;
+    try {
+      fs.copyFileSync(cookiesDb, tmpDb);
+      const query = `SELECT host, name, value, path, isSecure, isHttpOnly, expiry, sameSite FROM moz_cookies WHERE host LIKE '\''%kroger%'\'' OR host LIKE '\''%fredmeyer%'\'';`;
+      const output = execSync(`sqlite3 "${tmpDb}" "${query}"`, { encoding: "utf-8" });
+
+      const cookies = [];
+      const lines = output.split("\n").filter((l) => l.trim().length > 0);
+      for (const line of lines) {
+        const parts = line.split("|");
+        const [host, name, value, cookiePath, isSecure, isHttpOnly, expiry, sameSite] = parts;
+        if (name && value && !name.startsWith("bm_") && !name.startsWith("ak_") && name !== "_abck") {
+          const domain = host.startsWith(".") ? host : "." + host;
+          cookies.push({
+            name,
+            value,
+            domain,
+            path: cookiePath || "/",
+            secure: isSecure === "1",
+            httpOnly: isHttpOnly === "1",
+            expires: expiry ? Math.floor(parseInt(expiry, 10) / 1000) : undefined,
+            sameSite: sameSite === "1" ? "Lax" : sameSite === "2" ? "Strict" : "None"
+          });
+        }
+      }
+
+      if (cookies.length > bestCookies.length) {
+        bestCookies = cookies;
+      }
+    } catch {}
+  }
+
+  return bestCookies;
 }
 
 /**
@@ -60,79 +107,53 @@ async function waitForLoadingToFinish(page) {
 }
 
 /**
- * 1-time interactive login: opens browser, detects when login finishes, and auto-saves profile
+ * Open Firefox for 1-time login check
  */
 export async function openBrowserLogin() {
-  ensureDirs();
-  log("\n🌐 Opening browser for Fred Meyer 1-time login...");
-  log("👉 Please sign in to your Fred Meyer account in the opened Chrome window.");
-  log("⏳ Automation is watching the window and will automatically detect when you are signed in!\n");
-
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-    headless: false,
-    channel: "chrome",
-    viewport: { width: 1280, height: 900 }
-  });
-
-  const page = context.pages()[0] || (await context.newPage());
-  await page.goto("https://www.fredmeyer.com/signin?redirectUrl=/cart", { waitUntil: "domcontentloaded" });
-
-  // Poll until user finishes sign-in
-  let signedIn = false;
-  for (let i = 0; i < 120; i++) {
-    await page.waitForTimeout(1500);
-    await dismissModalsAndBanners(page);
-
-    const currentUrl = page.url();
-    if (
-      !currentUrl.includes("signin") &&
-      !currentUrl.includes("login.kroger.com") &&
-      (currentUrl.includes("fredmeyer.com/cart") ||
-        currentUrl.includes("fredmeyer.com/account") ||
-        currentUrl.includes("fredmeyer.com/"))
-    ) {
-      // Check if user name or sign-in state appears in page
-      const pageText = await page.innerText("body").catch(() => "");
-      if (pageText.includes("Sign Out") || pageText.includes("Christian") || pageText.includes("Your Cart")) {
-        signedIn = true;
-        break;
-      }
-    }
-  }
-
-  if (signedIn) {
-    log("\n🎉 Login detected successfully!");
-    await dismissModalsAndBanners(page);
-    await page.waitForTimeout(2000);
-    await context.close();
-    log("✓ Session permanently saved to .browser-profile!\n");
-  } else {
-    log("\n⏳ Timed out waiting for login. Closing browser...");
-    await context.close();
+  log("\n🦊 Opening Firefox to Fred Meyer sign-in...");
+  log("Please verify you are signed into your Fred Meyer account in Firefox.\n");
+  try {
+    execSync('open -a Firefox "https://www.fredmeyer.com/signin?redirectUrl=/cart"');
+    log("✓ Opened Firefox to https://www.fredmeyer.com/signin?redirectUrl=/cart");
+    log("Your active session cookies are automatically picked up from Firefox by the CLI!\n");
+  } catch (err) {
+    log(`Error opening Firefox: ${err.message}`);
   }
 }
 
 /**
- * Automated Checkout Engine
+ * Automated Checkout Engine via WebKit with Firefox Cookie Injection
  */
 export async function performAutomatedCheckout({
   scheduleDate = null,
   modality = "PICKUP",
   slotPreference = "earliest",
   dryRun = false,
-  headless = false
+  headless = true
 } = {}) {
   ensureDirs();
 
   log(`\n🤖 Launching automated checkout (${modality}, ${scheduleDate || "next available"})...`);
 
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-    headless,
-    channel: "chrome",
-    viewport: { width: 1280, height: 900 }
+  const cookies = getPersonalFirefoxCookies();
+  if (cookies.length === 0) {
+    throw new Error(
+      "No active Fred Meyer session cookies found in Firefox. Please open Firefox and sign in to fredmeyer.com."
+    );
+  }
+
+  log(`✓ Injected ${cookies.length} active session cookies from personal Firefox profile.`);
+
+  const browser = await webkit.launch({ headless });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
   });
 
-  const page = context.pages()[0] || (await context.newPage());
+  await context.addCookies(cookies);
+
+  const page = await context.newPage();
 
   try {
     // 1. Navigate to Cart
@@ -246,13 +267,13 @@ export async function performAutomatedCheckout({
 
     // 4. Take screenshot of final review
     const reviewScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-review-${Date.now()}.png`));
-    await page.screenshot({ path: reviewScreenshot });
+    await page.screenshot({ path: reviewScreenshot, animations: "disabled" });
     log(`\n📸 Saved review screenshot: ${reviewScreenshot}`);
 
     // 5. Handle Dry Run vs Final Submission
     if (dryRun) {
       log("\n🔍 [DRY RUN] Reached final review screen. Order was NOT submitted.");
-      await context.close();
+      await browser.close();
       return { success: true, dryRun: true, screenshot: reviewScreenshot };
     }
 
@@ -282,7 +303,7 @@ export async function performAutomatedCheckout({
     await page.waitForTimeout(8000);
 
     const confirmScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `order-confirmation-${Date.now()}.png`));
-    await page.screenshot({ path: confirmScreenshot });
+    await page.screenshot({ path: confirmScreenshot, animations: "disabled" });
 
     let orderNumber = "UNKNOWN";
     const bodyText = await page.innerText("body");
@@ -294,15 +315,15 @@ export async function performAutomatedCheckout({
     log(`\n🎉 Order Successfully Placed! Order ID: ${orderNumber}`);
     log(`📸 Confirmation Screenshot: ${confirmScreenshot}\n`);
 
-    await context.close();
+    await browser.close();
     return { success: true, orderNumber, screenshot: confirmScreenshot };
   } catch (err) {
     const errScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-error-${Date.now()}.png`));
     try {
-      await page.screenshot({ path: errScreenshot });
+      await page.screenshot({ path: errScreenshot, animations: "disabled" });
       log(`📸 Saved error state screenshot: ${errScreenshot}`);
     } catch {}
-    await context.close();
+    await browser.close();
     throw err;
   }
 }
