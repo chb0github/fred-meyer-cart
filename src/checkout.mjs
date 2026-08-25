@@ -1,10 +1,10 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
-import { chromium } from "playwright";
+import { firefox } from "playwright";
 import { PROJECT_ROOT } from "./config.mjs";
 
-export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile");
+export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "firefox");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
 
 function ensureDirs() {
@@ -26,38 +26,37 @@ function askQuestion(query) {
 }
 
 const DEFAULT_USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0";
 
 /**
- * 1-time interactive login to save persistent session cookies in .browser-profile
+ * 1-time interactive Firefox login to save persistent session cookies in .browser-profile/firefox
  */
 export async function openBrowserLogin() {
   ensureDirs();
-  console.log("\n🌐 Opening browser for Fred Meyer login...");
+  console.log("\n🦊 Opening Firefox for Fred Meyer login...");
   console.log("Please log in to your Fred Meyer account and complete any verification if prompted.");
 
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
     viewport: { width: 1280, height: 900 },
-    userAgent: DEFAULT_USER_AGENT,
-    args: ["--disable-blink-features=AutomationControlled"]
+    userAgent: DEFAULT_USER_AGENT
   });
 
   const page = context.pages()[0] || (await context.newPage());
   await page.goto("https://www.fredmeyer.com/signin", { waitUntil: "domcontentloaded" });
 
-  await askQuestion("\n👉 After you have successfully logged in on the browser, press [Enter] here to save session: ");
+  await askQuestion("\n👉 After you have successfully logged in on Firefox, press [Enter] here to save session: ");
 
-  // Quick check on account page or cart
+  // Navigate to cart to verify state
   await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2000);
 
   await context.close();
-  console.log("\n✓ Browser session & cookies successfully saved to .browser-profile!\n");
+  console.log("\n✓ Firefox session & cookies successfully saved to .browser-profile/firefox!\n");
 }
 
 /**
- * Automated Checkout Engine via Playwright
+ * Automated Checkout Engine via Playwright Firefox
  */
 export async function performAutomatedCheckout({
   scheduleDate = null,
@@ -69,23 +68,22 @@ export async function performAutomatedCheckout({
   ensureDirs();
 
   if (!fs.existsSync(BROWSER_PROFILE_DIR) || fs.readdirSync(BROWSER_PROFILE_DIR).length === 0) {
-    throw new Error("No saved browser session found. Please run 'fm auth-browser' first to log in.");
+    throw new Error("No saved browser session found. Please run 'fm auth-browser' first to log in with Firefox.");
   }
 
-  console.log(`\n🤖 Launching automated browser checkout (${modality}, ${scheduleDate || "next available"})...`);
+  console.log(`\n🤖 Launching automated Firefox checkout (${modality}, ${scheduleDate || "next available"})...`);
 
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless,
     viewport: { width: 1280, height: 900 },
-    userAgent: DEFAULT_USER_AGENT,
-    args: ["--disable-blink-features=AutomationControlled"]
+    userAgent: DEFAULT_USER_AGENT
   });
 
   const page = context.pages()[0] || (await context.newPage());
 
   try {
     // 1. Navigate to Cart
-    console.log("🛒 Navigating to https://www.fredmeyer.com/cart...");
+    console.log("🛒 Navigating to https://www.fredmeyer.com/cart in Firefox...");
     await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(3000);
 
@@ -118,7 +116,6 @@ export async function performAutomatedCheckout({
     }
 
     if (!checkoutBtn) {
-      // Fallback direct navigation
       console.log("Navigating directly to checkout flow...");
       await page.goto("https://www.fredmeyer.com/checkout", { waitUntil: "domcontentloaded" });
     } else {

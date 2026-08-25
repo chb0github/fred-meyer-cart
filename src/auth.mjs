@@ -115,7 +115,24 @@ async function refreshCustomerToken(refreshToken) {
 }
 
 /**
- * Perform interactive browser login flow for customer cart authorization
+ * Open URL in Firefox on macOS if available, otherwise default browser
+ */
+function openInFirefox(url) {
+  if (process.platform === "darwin") {
+    if (fs.existsSync("/Applications/Firefox.app")) {
+      exec(`open -a "Firefox" "${url}"`);
+      return;
+    }
+    exec(`open "${url}"`);
+  } else if (process.platform === "win32") {
+    exec(`start firefox "${url}" || start "" "${url}"`);
+  } else {
+    exec(`firefox "${url}" || xdg-open "${url}"`);
+  }
+}
+
+/**
+ * Perform browser login flow in Firefox for customer cart authorization
  */
 export async function authenticateCustomer() {
   const creds = getNetrcCredentials();
@@ -193,17 +210,11 @@ export async function authenticateCustomer() {
     });
 
     server.listen(port, () => {
-      console.log(`\n🔑 Authorizing Fred Meyer Cart Access...`);
-      console.log(`If the browser did not open automatically, open this URL:`);
-      console.log(`\x1b[36m${authUrl}\x1b[0m\n`);
+      console.log(`\n🦊 Opening in Firefox for Fred Meyer Cart Authorization...`);
+      console.log(`Or click / paste this link into your browser:`);
+      console.log(`\x1b[36m\x1b[1m${authUrl}\x1b[0m\n`);
 
-      if (process.platform === "darwin") {
-        exec(`open "${authUrl}"`);
-      } else if (process.platform === "win32") {
-        exec(`start "" "${authUrl}"`);
-      } else {
-        exec(`xdg-open "${authUrl}"`);
-      }
+      openInFirefox(authUrl);
     });
 
     server.on("error", (err) => {
