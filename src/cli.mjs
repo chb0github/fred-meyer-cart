@@ -658,6 +658,24 @@ function parseCliArgs(rawArgs) {
       if (fs.existsSync(TOKEN_FILE)) fs.unlinkSync(TOKEN_FILE);
       log("✓ Cleared local token cache.");
       process.exit(0);
+    } else if (arg === "cart") {
+      const nextArg = rawArgs[i + 1];
+      if (nextArg === "clear" || nextArg === "empty") {
+        options.command = "empty-cart";
+        i++;
+      } else if (nextArg === "checkout") {
+        options.command = "checkout";
+        i++;
+      }
+    } else if (arg === "list") {
+      const nextArg = rawArgs[i + 1];
+      if (nextArg === "clear" || nextArg === "empty" || nextArg === "reset") {
+        options.command = "clear-list";
+        i++;
+        if (rawArgs[i + 1] && !rawArgs[i + 1].startsWith("-")) {
+          options.list = rawArgs[++i];
+        }
+      }
     } else if (arg === "--empty-cart" || arg === "--clear-cart") {
       options.command = "empty-cart";
     } else if (arg === "--clear-list" || arg === "--empty-list") {
@@ -751,15 +769,15 @@ ${ANSI.bold}Usage:${ANSI.reset}
   fm [options]
   fm --list <file.csv> --pickup <date> --checkout [options]
   fm --list <file.csv> --delivery <date> --checkout [options]
-  fm empty-cart
-  fm clear-list [file.csv]
+  fm cart clear
+  fm list clear [file.csv]
 
 ${ANSI.bold}Hands-Off Automation Options:${ANSI.reset}
   ${ANSI.cyan}--checkout, -c${ANSI.reset}          Automate final checkout (selects time slot, payment & submits)
   ${ANSI.cyan}--dry-run, -d${ANSI.reset}           Preview & take review screenshot without placing order
   ${ANSI.cyan}--headed${ANSI.reset}                Run browser visually instead of headless mode
-  ${ANSI.cyan}empty-cart${ANSI.reset}              Remove all items and clear the active Fred Meyer cart
-  ${ANSI.cyan}clear-list${ANSI.reset}              Reset the local grocery CSV shopping list to clean header
+  ${ANSI.cyan}cart clear${ANSI.reset}              Empty and remove all items from the active Fred Meyer cart
+  ${ANSI.cyan}list clear${ANSI.reset}              Reset the local grocery CSV shopping list to clean header
 
 ${ANSI.bold}Piping & Shell Integration:${ANSI.reset}
   All informational logs and tables are routed to stderr.
