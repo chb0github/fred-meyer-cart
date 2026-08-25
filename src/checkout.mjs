@@ -1,10 +1,10 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
-import { webkit } from "playwright";
+import { chromium } from "playwright";
 import { PROJECT_ROOT } from "./config.mjs";
 
-export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "webkit");
+export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
 
 function log(msg = "") {
@@ -73,15 +73,16 @@ async function waitForLoadingToFinish(page) {
 }
 
 /**
- * 1-time interactive login to save persistent session profile in .browser-profile/webkit
+ * 1-time interactive login to save persistent session profile in .browser-profile
  */
 export async function openBrowserLogin() {
   ensureDirs();
   log("\n🌐 Opening browser for Fred Meyer 1-time login...");
   log("Please sign in to your Fred Meyer customer account in the opened window.\n");
 
-  const context = await webkit.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
+    channel: "chrome",
     viewport: { width: 1280, height: 900 }
   });
 
@@ -91,13 +92,13 @@ export async function openBrowserLogin() {
   await page.waitForTimeout(3000);
   await dismissModalsAndBanners(page);
 
-  await askQuestion("👉 Once you have signed in and see your name / cart, press [Enter] here to save: ");
+  await askQuestion("👉 Once you have signed in and see your cart / account, press [Enter] here to save session: ");
 
   await dismissModalsAndBanners(page);
   await page.waitForTimeout(2000);
 
   await context.close();
-  log("\n✓ Login session successfully saved to .browser-profile/webkit!\n");
+  log("\n✓ Login session successfully saved to .browser-profile!\n");
 }
 
 /**
@@ -108,14 +109,15 @@ export async function performAutomatedCheckout({
   modality = "PICKUP",
   slotPreference = "earliest",
   dryRun = false,
-  headless = true
+  headless = false
 } = {}) {
   ensureDirs();
 
   log(`\n🤖 Launching automated checkout (${modality}, ${scheduleDate || "next available"})...`);
 
-  const context = await webkit.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless,
+    channel: "chrome",
     viewport: { width: 1280, height: 900 }
   });
 
