@@ -12,7 +12,16 @@
     "auth": "node src/cli.mjs auth",
     "build-cart": "node src/cli.mjs build sample_list.txt"
   },
-  "keywords": ["fred-meyer", "kroger", "grocery", "cart", "pickup"],
+  "keywords": [
+    "fred-meyer",
+    "kroger",
+    "grocery",
+    "cart",
+    "pickup"
+  ],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
 }

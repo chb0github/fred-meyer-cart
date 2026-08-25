@@ -8,6 +8,7 @@ import { authenticateCustomer, getCustomerToken } from "./auth.mjs";
 import { searchLocations, searchProducts, addToCart } from "./krogerApi.mjs";
 import { parseShoppingList, parseSingleItem, serializeToCsv } from "./parser.mjs";
 import { matchShoppingList, matchItem } from "./matcher.mjs";
+import { openBrowserLogin, performAutomatedCheckout } from "./checkout.mjs";
 
 const ANSI = {
   reset: "\x1b[0m",
@@ -180,6 +181,7 @@ async function runInteractiveMode(initialResults, filePath, locationId, schedule
     const modeLabel = modality === "DELIVERY" ? "Delivery" : "Pickup";
     console.log(`${ANSI.bold}Actions:${ANSI.reset}`);
     console.log(`  ${ANSI.green}[P]${ANSI.reset} Push cart to Fred Meyer ${modeLabel}`);
+    console.log(`  ${ANSI.cyan}[C]${ANSI.reset} Push cart & Run Automated Headless Checkout`);
     console.log(`  ${ANSI.cyan}[E]${ANSI.reset} Edit quantity / change name (fuzzy match) / swap product`);
     console.log(`  ${ANSI.cyan}[A]${ANSI.reset} Add a new item`);
     console.log(`  ${ANSI.yellow}[D]${ANSI.reset} Delete an item`);
@@ -187,7 +189,7 @@ async function runInteractiveMode(initialResults, filePath, locationId, schedule
     console.log(`  ${ANSI.magenta}[S]${ANSI.reset} Save current list & Product IDs to CSV`);
     console.log(`  ${ANSI.dim}[Q] Quit without submitting${ANSI.reset}`);
 
-    const choice = (await askQuestion(`\nChoose action [P/e/a/d/m/s/q]: `)).toUpperCase();
+    const choice = (await askQuestion(`\nChoose action [P/c/e/a/d/m/s/q]: `)).toUpperCase();
 
     if (choice === "M") {
       modality = modality === "PICKUP" ? "DELIVERY" : "PICKUP";
@@ -195,7 +197,7 @@ async function runInteractiveMode(initialResults, filePath, locationId, schedule
       continue;
     }
 
-    if (choice === "P" || choice === "") {
+    if (choice === "P" || choice === "C" || choice === "") {
       const validItems = results
         .filter((r) => r.matched && r.selected)
         .map((r) => ({
@@ -216,12 +218,22 @@ async function runInteractiveMode(initialResults, filePath, locationId, schedule
       console.log(
         `\n${ANSI.green}${ANSI.bold}🎉 Success! Added ${validItems.length} items to your Fred Meyer ${modeLabel} cart!${ANSI.reset}`
       );
-      if (scheduleDate) {
-        console.log(`📅 Target ${modeLabel} Date: ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
+
+      if (choice === "C") {
+        console.log("\n🚀 Starting Automated Playwright Checkout...");
+        try {
+          await performAutomatedCheckout({ scheduleDate, modality, dryRun: false });
+        } catch (err) {
+          console.error(`${ANSI.red}Checkout error: ${err.message}${ANSI.reset}`);
+        }
+      } else {
+        if (scheduleDate) {
+          console.log(`📅 Target ${modeLabel} Date: ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
+        }
+        console.log(
+          `👉 Next Step: Open ${ANSI.cyan}https://www.fredmeyer.com/cart${ANSI.reset} to choose your ${modeLabel.toLowerCase()} window.\n`
+        );
       }
-      console.log(
-        `👉 Next Step: Open ${ANSI.cyan}https://www.fredmeyer.com/cart${ANSI.reset} to choose your ${modeLabel.toLowerCase()} window.\n`
-      );
       break;
     }
 
@@ -429,7 +441,7 @@ async function cmdOrder(filePath, options = {}) {
   if (isNonInteractive) {
     printTable(results, scheduleDate, storeName, modality);
 
-    if (options.dryRun) {
+    if (options.dryRun && !options.checkout) {
       console.log(`${ANSI.yellow}🔍 Dry Run complete: Cart was not modified.${ANSI.reset}\n`);
       return;
     }
@@ -452,10 +464,22 @@ async function cmdOrder(filePath, options = {}) {
     await addToCart(validItems, customerToken);
 
     console.log(`\n${ANSI.green}${ANSI.bold}✓ Success! ${validItems.length} items added to Fred Meyer ${modality} Cart.${ANSI.reset}`);
-    if (scheduleDate) {
-      console.log(`📅 Scheduled for ${modality === "DELIVERY" ? "Delivery" : "Pickup"} on: ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
+
+    // If --checkout is requested, run Playwright automated checkout
+    if (options.checkout) {
+      console.log(`\n🤖 Launching Playwright to complete automated checkout...`);
+      await performAutomatedCheckout({
+        scheduleDate,
+        modality,
+        dryRun: options.dryRun,
+        headless: !options.headed
+      });
+    } else {
+      if (scheduleDate) {
+        console.log(`📅 Scheduled for ${modality === "DELIVERY" ? "Delivery" : "Pickup"} on: ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
+      }
+      console.log(`👉 Complete checkout at: ${ANSI.cyan}https://www.fredmeyer.com/cart${ANSI.reset}\n`);
     }
-    console.log(`👉 Complete checkout at: ${ANSI.cyan}https://www.fredmeyer.com/cart${ANSI.reset}\n`);
   } else {
     await runInteractiveMode(results, resolved, locationId, scheduleDate, storeName, modality);
   }
@@ -497,11 +521,11 @@ async function cmdStore(zipArg) {
 }
 
 async function cmdAuth() {
-  console.log(`\n${ANSI.bold}Fred Meyer Customer Account Authorization${ANSI.reset}`);
-  console.log("Connects your Fred Meyer account to authorize adding items to your cart.\n");
+  console.log(`\n${ANSI.bold}Fred Meyer API Customer Account Authorization${ANSI.reset}`);
+  console.log("Connects your Fred Meyer account to authorize adding items to your cart via API.\n");
   try {
     await authenticateCustomer();
-    console.log(`\n${ANSI.green}✓ Authorization complete! Saved tokens to .tokens.json${ANSI.reset}\n`);
+    console.log(`\n${ANSI.green}✓ API Authorization complete! Saved tokens to .tokens.json${ANSI.reset}\n`);
   } catch (err) {
     console.error(`\n${ANSI.red}✗ Authorization failed: ${err.message}${ANSI.reset}\n`);
   }
@@ -547,6 +571,8 @@ function parseCliArgs(rawArgs) {
     budget: null,
     dryRun: false,
     sync: false,
+    checkout: false,
+    headed: false,
     format: "table",
     interactive: false,
     nonInteractive: false,
@@ -576,6 +602,10 @@ function parseCliArgs(rawArgs) {
       options.delivery = true;
       options.modality = "DELIVERY";
       options.deliveryDate = arg.split("=")[1];
+    } else if (arg === "--checkout" || arg === "-c") {
+      options.checkout = true;
+    } else if (arg === "--headed") {
+      options.headed = true;
     } else if (arg === "--store" || arg === "-s") {
       options.store = rawArgs[++i];
     } else if (arg.startsWith("--store=")) {
@@ -605,7 +635,7 @@ function parseCliArgs(rawArgs) {
       if (fs.existsSync(TOKEN_FILE)) fs.unlinkSync(TOKEN_FILE);
       console.log("✓ Cleared local token cache.");
       process.exit(0);
-    } else if (["auth", "sync", "store", "search", "help"].includes(arg)) {
+    } else if (["auth", "auth-browser", "checkout", "sync", "store", "search", "help"].includes(arg)) {
       options.command = arg;
       if (arg === "search") {
         options.searchQuery = rawArgs.slice(i + 1).join(" ");
@@ -640,6 +670,19 @@ async function main() {
     await cmdAuth();
     return;
   }
+  if (options.command === "auth-browser") {
+    await openBrowserLogin();
+    return;
+  }
+  if (options.command === "checkout") {
+    await performAutomatedCheckout({
+      scheduleDate: parseScheduleDate(options.pickup || options.deliveryDate),
+      modality: (options.modality || (options.delivery ? "DELIVERY" : "PICKUP")).toUpperCase(),
+      dryRun: options.dryRun,
+      headless: !options.headed
+    });
+    return;
+  }
   if (options.command === "sync") {
     await cmdOrder(options.list, { sync: true, dryRun: true, format: "table" });
     return;
@@ -658,21 +701,26 @@ ${ANSI.bold}Fred Meyer (Kroger) Cart Automation CLI (fm)${ANSI.reset}
 
 ${ANSI.bold}Usage:${ANSI.reset}
   fm [options]
-  fm --list <file.csv> --pickup <date> [options]
-  fm --list <file.csv> --delivery <date> [options]
+  fm --list <file.csv> --pickup <date> --checkout [options]
+  fm --list <file.csv> --delivery <date> --checkout [options]
+
+${ANSI.bold}Hands-Off Automation Options:${ANSI.reset}
+  ${ANSI.cyan}--checkout, -c${ANSI.reset}          Automate final checkout (selects time slot, payment & submits)
+  ${ANSI.cyan}--dry-run, -d${ANSI.reset}           Preview & take review screenshot without placing order
+  ${ANSI.cyan}--headed${ANSI.reset}                Run browser visually instead of headless mode
+
+${ANSI.bold}Authentication Commands:${ANSI.reset}
+  ${ANSI.cyan}auth-browser${ANSI.reset}            1-time browser login to save Fred Meyer session cookies
+  ${ANSI.cyan}auth${ANSI.reset}                    1-time API token link
 
 ${ANSI.bold}Core Options:${ANSI.reset}
-  ${ANSI.cyan}--list, -l <path>${ANSI.reset}          Path to shopping list CSV / TXT
-  ${ANSI.cyan}--pickup, -p <date>${ANSI.reset}        Set pickup date (today, tomorrow, friday, +2d, 09/10)
-  ${ANSI.cyan}--delivery [date]${ANSI.reset}          Set delivery date (today, tomorrow, friday, +2d, 09/10)
-  ${ANSI.cyan}--dry-run, -d${ANSI.reset}              Preview matches without pushing to cart
-  ${ANSI.cyan}--store, -s <id|zip>${ANSI.reset}       Override store location (e.g. -s 98029)
-  ${ANSI.cyan}--prefer <brand>${ANSI.reset}          Brand priority: store-brand | organic | lowest-price | name-brand
-  ${ANSI.cyan}--budget, -b <dollars>${ANSI.reset}    Budget threshold warning
-  ${ANSI.cyan}--format <table|json>${ANSI.reset}     Output format (default: table)
-  ${ANSI.cyan}--sync${ANSI.reset}                    Write back resolved Product IDs and prices to CSV
-  ${ANSI.cyan}--interactive, -i${ANSI.reset}          Force interactive mode
-  ${ANSI.cyan}--yes, -y${ANSI.reset}                  Force automated non-interactive order
+  ${ANSI.cyan}--list, -l <path>${ANSI.reset}       Path to shopping list CSV / TXT
+  ${ANSI.cyan}--pickup, -p <date>${ANSI.reset}     Set pickup date (today, tomorrow, friday, 09/10)
+  ${ANSI.cyan}--delivery [date]${ANSI.reset}       Set delivery date (today, tomorrow, friday, 09/10)
+  ${ANSI.cyan}--store, -s <id|zip>${ANSI.reset}    Override store location (e.g. -s 98029)
+  ${ANSI.cyan}--prefer <brand>${ANSI.reset}       Brand priority: store-brand | organic | lowest-price | name-brand
+  ${ANSI.cyan}--budget, -b <dollars>${ANSI.reset} Budget threshold warning
+  ${ANSI.cyan}--sync${ANSI.reset}                 Write back resolved Product IDs and prices to CSV
 `);
     return;
   }

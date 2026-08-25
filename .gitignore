@@ -4,6 +4,11 @@
 .env
 *.token
 
+# Browser Profile & Session State
+.browser-profile/
+screenshots/
+*.png
+
 # Local configuration overrides
 .config.json
 
