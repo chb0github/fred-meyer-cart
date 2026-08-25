@@ -1,8 +1,10 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import readline from "readline";
+import { execSync } from "child_process";
 import { firefox } from "playwright";
-import { PROJECT_ROOT } from "./config.mjs";
+import { PROJECT_ROOT, getNetrcCredentials } from "./config.mjs";
 
 export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "firefox");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
@@ -12,29 +14,81 @@ function ensureDirs() {
   if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 }
 
-function askQuestion(query) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-  return new Promise((resolve) =>
-    rl.question(query, (ans) => {
-      rl.close();
-      resolve(ans.trim());
-    })
-  );
-}
-
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0";
 
 /**
- * 1-time interactive Firefox login to save persistent session cookies in .browser-profile/firefox
+ * Extracts active cookies for fredmeyer.com / kroger.com from personal Firefox profile
+ */
+export function getPersonalFirefoxCookies() {
+  const baseDir = path.join(os.homedir(), "Library/Application Support/Firefox/Profiles");
+  if (!fs.existsSync(baseDir)) return [];
+
+  let bestCookies = [];
+
+  for (const profileName of fs.readdirSync(baseDir)) {
+    const cookiesDb = path.join(baseDir, profileName, "cookies.sqlite");
+    if (!fs.existsSync(cookiesDb)) continue;
+
+    const tmpDb = `/tmp/fm_cookies_${profileName}.sqlite`;
+    try {
+      fs.copyFileSync(cookiesDb, tmpDb);
+      const query = `SELECT host, name, value, path, isSecure, isHttpOnly, expiry, sameSite FROM moz_cookies WHERE host LIKE '\''%kroger%'\'' OR host LIKE '\''%fredmeyer%'\'';`;
+      const output = execSync(`sqlite3 "${tmpDb}" "${query}"`, { encoding: "utf-8" });
+
+      const cookies = [];
+      const lines = output.split("\n").filter((l) => l.trim().length > 0);
+      for (const line of lines) {
+        const parts = line.split("|");
+        const [host, name, value, cookiePath, isSecure, isHttpOnly, expiry, sameSite] = parts;
+        if (name && value) {
+          // Playwright expects clean domains without port
+          const domain = host.startsWith(".") ? host : "." + host;
+          cookies.push({
+            name,
+            value,
+            domain: domain.replace(/^\.\./, "."),
+            path: cookiePath || "/",
+            secure: isSecure === "1",
+            httpOnly: isHttpOnly === "1",
+            expires: expiry ? parseInt(expiry, 10) : undefined,
+            sameSite: sameSite === "1" ? "Lax" : sameSite === "2" ? "Strict" : "None"
+          });
+        }
+      }
+
+      if (cookies.length > bestCookies.length) {
+        bestCookies = cookies;
+      }
+    } catch {}
+  }
+
+  return bestCookies;
+}
+
+/**
+ * Automatically sync cookies from personal Firefox profile into browser context
+ */
+export async function syncCookiesToContext(context) {
+  const cookies = getPersonalFirefoxCookies();
+  if (cookies.length > 0) {
+    try {
+      await context.addCookies(cookies);
+      console.log(`✓ Auto-imported ${cookies.length} active session cookies from your personal Firefox profile!`);
+      return true;
+    } catch (err) {
+      console.warn(`Warning: Could not import cookies: ${err.message}`);
+    }
+  }
+  return false;
+}
+
+/**
+ * Interactive login or cookie sync helper
  */
 export async function openBrowserLogin() {
   ensureDirs();
-  console.log("\n🦊 Opening Firefox for Fred Meyer login...");
-  console.log("Please log in to your Fred Meyer account and complete any verification if prompted.");
+  console.log("\n🦊 Launching Firefox for Fred Meyer session sync...");
 
   const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
@@ -42,17 +96,16 @@ export async function openBrowserLogin() {
     userAgent: DEFAULT_USER_AGENT
   });
 
+  // Automatically sync cookies from existing personal profile
+  await syncCookiesToContext(context);
+
   const page = context.pages()[0] || (await context.newPage());
-  await page.goto("https://www.fredmeyer.com/signin", { waitUntil: "domcontentloaded" });
-
-  await askQuestion("\n👉 After you have successfully logged in on Firefox, press [Enter] here to save session: ");
-
-  // Navigate to cart to verify state
+  console.log("Navigating to https://www.fredmeyer.com/cart...");
   await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
 
+  console.log("\n✓ Session initialized! Cookies synced to .browser-profile/firefox.\n");
   await context.close();
-  console.log("\n✓ Firefox session & cookies successfully saved to .browser-profile/firefox!\n");
 }
 
 /**
@@ -67,10 +120,6 @@ export async function performAutomatedCheckout({
 } = {}) {
   ensureDirs();
 
-  if (!fs.existsSync(BROWSER_PROFILE_DIR) || fs.readdirSync(BROWSER_PROFILE_DIR).length === 0) {
-    throw new Error("No saved browser session found. Please run 'fm auth-browser' first to log in with Firefox.");
-  }
-
   console.log(`\n🤖 Launching automated Firefox checkout (${modality}, ${scheduleDate || "next available"})...`);
 
   const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
@@ -79,25 +128,36 @@ export async function performAutomatedCheckout({
     userAgent: DEFAULT_USER_AGENT
   });
 
+  // Always sync fresh cookies from personal Firefox profile
+  await syncCookiesToContext(context);
+
   const page = context.pages()[0] || (await context.newPage());
 
   try {
     // 1. Navigate to Cart
-    console.log("🛒 Navigating to https://www.fredmeyer.com/cart in Firefox...");
+    console.log("🛒 Navigating to https://www.fredmeyer.com/cart...");
     await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(3000);
 
-    // 2. Check if logged in
-    const signInBtn = await page.$('text="Sign In"');
-    if (signInBtn && (await signInBtn.isVisible())) {
-      const isCartEmpty = await page.$('text="Your cart is empty"');
-      if (isCartEmpty) {
-        throw new Error("Cart is empty or session expired. Please run 'fm auth-browser' to re-authenticate.");
+    // 2. Check if login is needed and auto-fill if form is present
+    const emailInput = await page.$('input[type="email"], input[name="email"], #email');
+    if (emailInput && (await emailInput.isVisible())) {
+      const creds = getNetrcCredentials();
+      if (creds && creds.clientId && creds.clientSecret) {
+        console.log("🔑 Auto-filling login credentials from .netrc...");
+        await emailInput.fill(creds.clientId);
+        const passInput = await page.$('input[type="password"], input[name="password"], #password');
+        if (passInput) {
+          await passInput.fill(creds.clientSecret);
+          const submitBtn = await page.$('button[type="submit"], button:has-text("Sign In")');
+          if (submitBtn) await submitBtn.click();
+          await page.waitForTimeout(5000);
+        }
       }
     }
 
-    // 3. Locate Checkout / Claim Time Slot Button
-    console.log("🔍 Looking for checkout button...");
+    // 3. Locate Checkout Button
+    console.log("🔍 Locating checkout button...");
     const checkoutSelectors = [
       'button:has-text("Proceed to Checkout")',
       'button:has-text("Check Out")',
@@ -126,9 +186,8 @@ export async function performAutomatedCheckout({
     await page.waitForTimeout(5000);
 
     // 4. Select fulfillment date & time slot
-    console.log("📅 Selecting pickup/delivery time slot...");
+    console.log("📅 Selecting fulfillment time slot...");
 
-    // Try finding date button if specific date requested
     if (scheduleDate) {
       const dateParts = scheduleDate.split(/[\s,]+/);
       for (const part of dateParts) {
@@ -226,7 +285,6 @@ export async function performAutomatedCheckout({
     const confirmScreenshot = path.join(SCREENSHOTS_DIR, `order-confirmation-${Date.now()}.png`);
     await page.screenshot({ path: confirmScreenshot, fullPage: true });
 
-    // Extract order number
     let orderNumber = "UNKNOWN";
     const bodyText = await page.innerText("body");
     const orderMatch = bodyText.match(/Order\s*#?\s*([A-Z0-9\-]{6,20})/i);
