@@ -34,7 +34,7 @@ function askQuestion(query) {
   );
 }
 
-function parsePickupDate(input) {
+function parseScheduleDate(input) {
   if (!input) return null;
   const str = input.trim().toLowerCase();
   const now = new Date();
@@ -68,14 +68,16 @@ function parsePickupDate(input) {
   return input.trim();
 }
 
-function printTable(results, pickupDate = null, storeName = null) {
-  console.log(`\n${ANSI.bold}Fred Meyer Pickup Cart Preview:${ANSI.reset}`);
+function printTable(results, scheduleDate = null, storeName = null, modality = "PICKUP") {
+  const modeLabel = modality === "DELIVERY" ? "Delivery" : "Pickup";
+  console.log(`\n${ANSI.bold}Fred Meyer ${modeLabel} Cart Preview:${ANSI.reset}`);
   if (storeName) {
     console.log(` 🏬 ${ANSI.dim}Store:${ANSI.reset} ${ANSI.cyan}${storeName}${ANSI.reset}`);
   }
-  if (pickupDate) {
-    console.log(` 📅 ${ANSI.dim}Target Pickup Date:${ANSI.reset} ${ANSI.bold}${pickupDate}${ANSI.reset}`);
+  if (scheduleDate) {
+    console.log(` 📅 ${ANSI.dim}Target ${modeLabel} Date:${ANSI.reset} ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
   }
+  console.log(` 🚚 ${ANSI.dim}Modality:${ANSI.reset} ${ANSI.yellow}${modality}${ANSI.reset}`);
   console.log();
   console.log(
     ` ${ANSI.dim}#   Qty  Price    Subtotal  Product Description                     Product ID     Size${ANSI.reset}`
@@ -120,10 +122,11 @@ function printTable(results, pickupDate = null, storeName = null) {
   return estTotal;
 }
 
-function outputJson(results, storeName, pickupDate, estTotal) {
+function outputJson(results, storeName, scheduleDate, modality, estTotal) {
   const output = {
     store: storeName,
-    pickupDate: pickupDate || null,
+    modality,
+    scheduleDate: scheduleDate || null,
     totalEstimated: parseFloat(estTotal.toFixed(2)),
     matchedCount: results.filter((r) => r.matched).length,
     totalItems: results.length,
@@ -146,21 +149,29 @@ function outputJson(results, storeName, pickupDate, estTotal) {
 // Interactive Mode Loop
 // -------------------------------------------------------------
 
-async function runInteractiveMode(initialResults, filePath, locationId, pickupDate = null, storeName = null) {
+async function runInteractiveMode(initialResults, filePath, locationId, scheduleDate = null, storeName = null, modality = "PICKUP") {
   let results = [...initialResults];
 
   while (true) {
-    printTable(results, pickupDate, storeName);
+    printTable(results, scheduleDate, storeName, modality);
 
+    const modeLabel = modality === "DELIVERY" ? "Delivery" : "Pickup";
     console.log(`${ANSI.bold}Actions:${ANSI.reset}`);
-    console.log(`  ${ANSI.green}[P]${ANSI.reset} Push cart to Fred Meyer Pickup`);
+    console.log(`  ${ANSI.green}[P]${ANSI.reset} Push cart to Fred Meyer ${modeLabel}`);
     console.log(`  ${ANSI.cyan}[E]${ANSI.reset} Edit quantity / change name (fuzzy match) / swap product`);
     console.log(`  ${ANSI.cyan}[A]${ANSI.reset} Add a new item`);
     console.log(`  ${ANSI.yellow}[D]${ANSI.reset} Delete an item`);
+    console.log(`  ${ANSI.yellow}[M]${ANSI.reset} Toggle Modality (${modality === "PICKUP" ? "switch to DELIVERY" : "switch to PICKUP"})`);
     console.log(`  ${ANSI.magenta}[S]${ANSI.reset} Save current list & Product IDs to CSV`);
     console.log(`  ${ANSI.dim}[Q] Quit without submitting${ANSI.reset}`);
 
-    const choice = (await askQuestion(`\nChoose action [P/e/a/d/s/q]: `)).toUpperCase();
+    const choice = (await askQuestion(`\nChoose action [P/e/a/d/m/s/q]: `)).toUpperCase();
+
+    if (choice === "M") {
+      modality = modality === "PICKUP" ? "DELIVERY" : "PICKUP";
+      console.log(`\n${ANSI.green}✓ Switched modality to ${modality}${ANSI.reset}`);
+      continue;
+    }
 
     if (choice === "P" || choice === "") {
       const validItems = results
@@ -168,7 +179,7 @@ async function runInteractiveMode(initialResults, filePath, locationId, pickupDa
         .map((r) => ({
           upc: r.selected.productId || r.selected.upc,
           quantity: r.item.quantity,
-          modality: "PICKUP"
+          modality
         }));
 
       if (validItems.length === 0) {
@@ -176,18 +187,18 @@ async function runInteractiveMode(initialResults, filePath, locationId, pickupDa
         continue;
       }
 
-      console.log("\n📦 Authenticating & sending items to Fred Meyer Cart...");
+      console.log(`\n📦 Authenticating & sending items to Fred Meyer (${modality})...`);
       const customerToken = await getCustomerToken(true);
       await addToCart(validItems, customerToken);
 
       console.log(
-        `\n${ANSI.green}${ANSI.bold}🎉 Success! Added ${validItems.length} items to your Fred Meyer Pickup cart!${ANSI.reset}`
+        `\n${ANSI.green}${ANSI.bold}🎉 Success! Added ${validItems.length} items to your Fred Meyer ${modeLabel} cart!${ANSI.reset}`
       );
-      if (pickupDate) {
-        console.log(`📅 Target Pickup Date: ${ANSI.bold}${pickupDate}${ANSI.reset}`);
+      if (scheduleDate) {
+        console.log(`📅 Target ${modeLabel} Date: ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
       }
       console.log(
-        `👉 Next Step: Open ${ANSI.cyan}https://www.fredmeyer.com/cart${ANSI.reset} to reserve your pickup time slot.\n`
+        `👉 Next Step: Open ${ANSI.cyan}https://www.fredmeyer.com/cart${ANSI.reset} to choose your ${modeLabel.toLowerCase()} window.\n`
       );
       break;
     }
@@ -310,7 +321,6 @@ async function cmdOrder(filePath, options = {}) {
   let locationId = config.locationId;
   let storeName = config.storeName;
 
-  // Handle custom store override (--store)
   if (options.store) {
     if (options.store.match(/^\d{5}$/)) {
       const locs = await searchLocations({ zipCode: options.store, chain: null, limit: 1 });
@@ -339,12 +349,13 @@ async function cmdOrder(filePath, options = {}) {
 
   const content = fs.readFileSync(resolved, "utf-8");
   const parsed = parseShoppingList(content, resolved);
-  const formattedPickup = parsePickupDate(options.pickup);
+  const modality = (options.modality || (options.delivery ? "DELIVERY" : "PICKUP")).toUpperCase();
+  const scheduleDate = parseScheduleDate(options.pickup || options.deliveryDate);
 
   if (options.format !== "json") {
     console.log(`\n🏬 Loading list from ${ANSI.bold}${path.basename(resolved)}${ANSI.reset} at ${ANSI.cyan}${storeName}${ANSI.reset}...`);
-    if (formattedPickup) {
-      console.log(`📅 Target Pickup Date: ${ANSI.bold}${formattedPickup}${ANSI.reset}`);
+    if (scheduleDate) {
+      console.log(`📅 Target ${modality === "DELIVERY" ? "Delivery" : "Pickup"} Date: ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
     }
     if (options.prefer) {
       console.log(`🏷️  Brand Preference: ${ANSI.yellow}${options.prefer}${ANSI.reset}`);
@@ -367,7 +378,6 @@ async function cmdOrder(filePath, options = {}) {
     process.stdout.write("\r" + " ".repeat(60) + "\r");
   }
 
-  // Calculate total
   const estTotal = results.reduce((acc, r) => {
     if (r.matched && r.selected) {
       return acc + (parseFloat(r.selected.price) || 0) * r.item.quantity;
@@ -375,30 +385,27 @@ async function cmdOrder(filePath, options = {}) {
     return acc;
   }, 0);
 
-  // Check budget constraint (--budget)
   if (options.budget && estTotal > options.budget) {
     console.warn(
       `\n${ANSI.yellow}⚠️  Budget Alert: Estimated total $${estTotal.toFixed(2)} exceeds budget threshold of $${options.budget.toFixed(2)}${ANSI.reset}`
     );
   }
 
-  // JSON output format (--format json)
   if (options.format === "json") {
-    outputJson(results, storeName, formattedPickup, estTotal);
+    outputJson(results, storeName, scheduleDate, modality, estTotal);
     return;
   }
 
-  // Auto-sync CSV if requested (--sync)
   if (options.sync) {
     const targetCsv = resolved.endsWith(".csv") ? resolved : resolved.replace(/\.[^.]+$/, "") + ".csv";
     fs.writeFileSync(targetCsv, serializeToCsv(results), "utf-8");
     console.log(`${ANSI.green}✓ Synced Product IDs to ${targetCsv}${ANSI.reset}`);
   }
 
-  const isNonInteractive = options.nonInteractive || options.yes || options.dryRun || Boolean(options.pickup && !options.interactive);
+  const isNonInteractive = options.nonInteractive || options.yes || options.dryRun || Boolean((options.pickup || options.deliveryDate) && !options.interactive);
 
   if (isNonInteractive) {
-    printTable(results, formattedPickup, storeName);
+    printTable(results, scheduleDate, storeName, modality);
 
     if (options.dryRun) {
       console.log(`${ANSI.yellow}🔍 Dry Run complete: Cart was not modified.${ANSI.reset}\n`);
@@ -410,7 +417,7 @@ async function cmdOrder(filePath, options = {}) {
       .map((r) => ({
         upc: r.selected.productId || r.selected.upc,
         quantity: r.item.quantity,
-        modality: "PICKUP"
+        modality
       }));
 
     if (validItems.length === 0) {
@@ -418,18 +425,17 @@ async function cmdOrder(filePath, options = {}) {
       process.exit(1);
     }
 
-    console.log(`🚀 Automated mode: Submitting ${validItems.length} items to Fred Meyer Pickup Cart...`);
+    console.log(`🚀 Automated mode: Submitting ${validItems.length} items to Fred Meyer ${modality} Cart...`);
     const customerToken = await getCustomerToken(false);
     await addToCart(validItems, customerToken);
 
-    console.log(`\n${ANSI.green}${ANSI.bold}✓ Success! ${validItems.length} items added to Fred Meyer Pickup Cart.${ANSI.reset}`);
-    if (formattedPickup) {
-      console.log(`📅 Target Pickup Date: ${ANSI.bold}${formattedPickup}${ANSI.reset}`);
+    console.log(`\n${ANSI.green}${ANSI.bold}✓ Success! ${validItems.length} items added to Fred Meyer ${modality} Cart.${ANSI.reset}`);
+    if (scheduleDate) {
+      console.log(`📅 Scheduled for ${modality === "DELIVERY" ? "Delivery" : "Pickup"} on: ${ANSI.bold}${scheduleDate}${ANSI.reset}`);
     }
     console.log(`👉 Complete checkout at: ${ANSI.cyan}https://www.fredmeyer.com/cart${ANSI.reset}\n`);
   } else {
-    // Interactive mode
-    await runInteractiveMode(results, resolved, locationId, formattedPickup, storeName);
+    await runInteractiveMode(results, resolved, locationId, scheduleDate, storeName, modality);
   }
 }
 
@@ -470,7 +476,7 @@ async function cmdStore(zipArg) {
 
 async function cmdAuth() {
   console.log(`\n${ANSI.bold}Fred Meyer Customer Account Authorization${ANSI.reset}`);
-  console.log("Connects your Fred Meyer account to authorize adding items to your pickup cart.\n");
+  console.log("Connects your Fred Meyer account to authorize adding items to your cart.\n");
   try {
     await authenticateCustomer();
     console.log(`\n${ANSI.green}✓ Authorization complete! Saved tokens to .tokens.json${ANSI.reset}\n`);
@@ -506,15 +512,14 @@ async function cmdSearch(query, locationId = null) {
   });
 }
 
-// -------------------------------------------------------------
-// Command Line Option Parser
-// -------------------------------------------------------------
-
 function parseCliArgs(rawArgs) {
   const options = {
     command: null,
     list: null,
     pickup: null,
+    delivery: false,
+    deliveryDate: null,
+    modality: null,
     store: null,
     prefer: null,
     budget: null,
@@ -539,6 +544,16 @@ function parseCliArgs(rawArgs) {
       options.pickup = rawArgs[++i];
     } else if (arg.startsWith("--pickup=")) {
       options.pickup = arg.split("=")[1];
+    } else if (arg === "--delivery" || arg === "--deliver") {
+      options.delivery = true;
+      options.modality = "DELIVERY";
+      if (rawArgs[i + 1] && !rawArgs[i + 1].startsWith("-")) {
+        options.deliveryDate = rawArgs[++i];
+      }
+    } else if (arg.startsWith("--delivery=")) {
+      options.delivery = true;
+      options.modality = "DELIVERY";
+      options.deliveryDate = arg.split("=")[1];
     } else if (arg === "--store" || arg === "-s") {
       options.store = rawArgs[++i];
     } else if (arg.startsWith("--store=")) {
@@ -589,10 +604,6 @@ function parseCliArgs(rawArgs) {
   return options;
 }
 
-// -------------------------------------------------------------
-// Entry Point
-// -------------------------------------------------------------
-
 async function main() {
   const creds = getNetrcCredentials();
   if (!creds) {
@@ -626,40 +637,24 @@ ${ANSI.bold}Fred Meyer (Kroger) Cart Automation CLI (fm)${ANSI.reset}
 ${ANSI.bold}Usage:${ANSI.reset}
   fm [options]
   fm --list <file.csv> --pickup <date> [options]
-  fm <command> [arguments]
+  fm --list <file.csv> --delivery <date> [options]
 
 ${ANSI.bold}Core Options:${ANSI.reset}
-  ${ANSI.cyan}--list, -l <path>${ANSI.reset}          Path to shopping list CSV / TXT (default: sample_list.csv)
-  ${ANSI.cyan}--pickup, -p <date>${ANSI.reset}        Set target pickup date (e.g. 09/10, tomorrow, Friday)
+  ${ANSI.cyan}--list, -l <path>${ANSI.reset}          Path to shopping list CSV / TXT
+  ${ANSI.cyan}--pickup, -p <date>${ANSI.reset}        Set target pickup date (e.g. 09/10, tomorrow)
+  ${ANSI.cyan}--delivery [date]${ANSI.reset}          Submit cart for DELIVERY instead of Pickup
   ${ANSI.cyan}--dry-run, -d${ANSI.reset}              Preview matched items, prices & total without pushing to cart
-  ${ANSI.cyan}--store, -s <id|zip>${ANSI.reset}       Override store location for this run (e.g. -s 98029)
+  ${ANSI.cyan}--store, -s <id|zip>${ANSI.reset}       Override store location (e.g. -s 98029)
   ${ANSI.cyan}--prefer <brand>${ANSI.reset}          Brand priority: store-brand | organic | lowest-price | name-brand
-  ${ANSI.cyan}--budget, -b <dollars>${ANSI.reset}    Set budget threshold (warns if estimated total exceeds budget)
-  ${ANSI.cyan}--format <table|json>${ANSI.reset}     Output format for scripts/piping (default: table)
-  ${ANSI.cyan}--sync${ANSI.reset}                    Write back resolved Product IDs and prices into the CSV file
-  ${ANSI.cyan}--interactive, -i${ANSI.reset}          Force interactive review mode
+  ${ANSI.cyan}--budget, -b <dollars>${ANSI.reset}    Budget limit warning threshold
+  ${ANSI.cyan}--format <table|json>${ANSI.reset}     Output format (default: table)
+  ${ANSI.cyan}--sync${ANSI.reset}                    Write back resolved Product IDs and prices to CSV
+  ${ANSI.cyan}--interactive, -i${ANSI.reset}          Force interactive mode
   ${ANSI.cyan}--yes, -y${ANSI.reset}                  Force automated non-interactive order
-  ${ANSI.cyan}--clear-tokens${ANSI.reset}             Reset cached customer OAuth tokens
-
-${ANSI.bold}Commands:${ANSI.reset}
-  ${ANSI.cyan}search <query>${ANSI.reset}            Search Fred Meyer catalog & view Product IDs
-  ${ANSI.cyan}store [zip]${ANSI.reset}                View or set default store (default: 98029)
-  ${ANSI.cyan}auth${ANSI.reset}                       One-time customer login to link your Fred Meyer cart
-
-${ANSI.bold}Cron / Automation Examples:${ANSI.reset}
-  # Submit order for tomorrow morning pickup:
-  fm --list weekly.csv --pickup tomorrow
-
-  # Dry-run check with budget & store-brand preference:
-  fm -l weekly.csv --prefer store-brand --budget 75 --dry-run
-
-  # JSON output for cron / reporting pipelines:
-  fm -l weekly.csv --format json
 `);
     return;
   }
 
-  // Default execution (order list)
   await cmdOrder(options.list, options);
 }
 
