@@ -9,9 +9,26 @@ import { PROJECT_ROOT, getNetrcCredentials } from "./config.mjs";
 export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "firefox");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
 
+function log(msg = "") {
+  process.stderr.write(msg + "\n");
+}
+
 function ensureDirs() {
   if (!fs.existsSync(BROWSER_PROFILE_DIR)) fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
   if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+}
+
+function askQuestion(query) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stderr
+  });
+  return new Promise((resolve) =>
+    rl.question(query, (ans) => {
+      rl.close();
+      resolve(ans.trim());
+    })
+  );
 }
 
 const DEFAULT_USER_AGENT =
@@ -73,10 +90,10 @@ export async function syncCookiesToContext(context) {
   if (cookies.length > 0) {
     try {
       await context.addCookies(cookies);
-      console.log(`✓ Auto-imported ${cookies.length} active session cookies from your personal Firefox profile!`);
+      log(`✓ Auto-imported ${cookies.length} active session cookies from your personal Firefox profile!`);
       return true;
     } catch (err) {
-      console.warn(`Warning: Could not import cookies: ${err.message}`);
+      log(`Warning: Could not import cookies: ${err.message}`);
     }
   }
   return false;
@@ -87,7 +104,6 @@ export async function syncCookiesToContext(context) {
  */
 export async function dismissModalsAndBanners(page) {
   const modalCloseSelectors = [
-    // Modal Close (X) buttons
     '[aria-modal="true"] button[aria-label*="lose" i]',
     '[aria-modal="true"] button[aria-label*="dismiss" i]',
     '[aria-modal="true"] button[data-testid*="close" i]',
@@ -97,12 +113,10 @@ export async function dismissModalsAndBanners(page) {
     'button[aria-label="close"]',
     'button[data-testid="close-button"]',
     '.kds-Modal-closeButton',
-    // OneTrust / Optanon / Cookie banner buttons
     '#onetrust-accept-btn-handler',
     'button:has-text("Accept All Cookies")',
     'button:has-text("Accept All")',
     'button:has-text("Confirm My Choices")',
-    // Privacy policy / Terms update confirmation buttons
     'button:has-text("I Understand")',
     'button:has-text("I Agree")',
     'button:has-text("Got It")',
@@ -118,7 +132,7 @@ export async function dismissModalsAndBanners(page) {
         const elements = await page.$$(sel);
         for (const el of elements) {
           if (await el.isVisible()) {
-            console.log(`🛡️  Auto-dismissing privacy banner / modal (${sel})...`);
+            log(`🛡️  Auto-dismissing modal / privacy banner (${sel})...`);
             await el.click({ timeout: 2000 });
             closedAny = true;
             await page.waitForTimeout(1000);
@@ -137,7 +151,7 @@ async function waitForLoadingToFinish(page) {
   try {
     const loadingSpinner = await page.$('text="Loading..."');
     if (loadingSpinner && (await loadingSpinner.isVisible())) {
-      console.log("⏳ Waiting for page loading spinner...");
+      log("⏳ Waiting for page loading spinner...");
       await page.waitForSelector('text="Loading..."', { state: "hidden", timeout: 15000 });
     }
   } catch {}
@@ -148,7 +162,7 @@ async function waitForLoadingToFinish(page) {
  */
 export async function openBrowserLogin() {
   ensureDirs();
-  console.log("\n🦊 Launching Firefox for Fred Meyer session sync...");
+  log("\n🦊 Launching Firefox for Fred Meyer session sync...");
 
   const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
@@ -159,12 +173,12 @@ export async function openBrowserLogin() {
   await syncCookiesToContext(context);
 
   const page = context.pages()[0] || (await context.newPage());
-  console.log("Navigating to https://www.fredmeyer.com/cart...");
+  log("Navigating to https://www.fredmeyer.com/cart...");
   await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(3000);
   await dismissModalsAndBanners(page);
 
-  console.log("\n✓ Session initialized! Cookies synced to .browser-profile/firefox.\n");
+  log("\n✓ Session initialized! Cookies synced to .browser-profile/firefox.\n");
   await context.close();
 }
 
@@ -180,7 +194,7 @@ export async function performAutomatedCheckout({
 } = {}) {
   ensureDirs();
 
-  console.log(`\n🤖 Launching automated Firefox checkout (${modality}, ${scheduleDate || "next available"})...`);
+  log(`\n🤖 Launching automated Firefox checkout (${modality}, ${scheduleDate || "next available"})...`);
 
   const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless,
@@ -188,14 +202,13 @@ export async function performAutomatedCheckout({
     userAgent: DEFAULT_USER_AGENT
   });
 
-  // Always sync fresh cookies from personal Firefox profile
   await syncCookiesToContext(context);
 
   const page = context.pages()[0] || (await context.newPage());
 
   try {
     // 1. Navigate to Cart
-    console.log("🛒 Navigating to https://www.fredmeyer.com/cart...");
+    log("🛒 Navigating to https://www.fredmeyer.com/cart...");
     await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(3000);
     await dismissModalsAndBanners(page);
@@ -206,7 +219,7 @@ export async function performAutomatedCheckout({
     if (emailInput && (await emailInput.isVisible())) {
       const creds = getNetrcCredentials();
       if (creds && creds.clientId && creds.clientSecret) {
-        console.log("🔑 Auto-filling login credentials from .netrc...");
+        log("🔑 Auto-filling login credentials from .netrc...");
         await emailInput.fill(creds.clientId);
         const passInput = await page.$('input[type="password"], input[name="password"], #password');
         if (passInput) {
@@ -221,7 +234,7 @@ export async function performAutomatedCheckout({
     }
 
     // 3. Locate Checkout Button
-    console.log("🔍 Locating checkout button...");
+    log("🔍 Locating checkout button...");
     await dismissModalsAndBanners(page);
 
     const checkoutSelectors = [
@@ -242,10 +255,10 @@ export async function performAutomatedCheckout({
     }
 
     if (!checkoutBtn) {
-      console.log("Navigating directly to checkout flow...");
+      log("Navigating directly to checkout flow...");
       await page.goto("https://www.fredmeyer.com/checkout", { waitUntil: "domcontentloaded" });
     } else {
-      console.log("Clicking checkout button...");
+      log("Clicking checkout button...");
       await checkoutBtn.click();
     }
 
@@ -254,7 +267,7 @@ export async function performAutomatedCheckout({
     await waitForLoadingToFinish(page);
 
     // 4. Select fulfillment date & time slot
-    console.log("📅 Selecting fulfillment time slot...");
+    log("📅 Selecting fulfillment time slot...");
     await dismissModalsAndBanners(page);
 
     if (scheduleDate) {
@@ -263,7 +276,7 @@ export async function performAutomatedCheckout({
         if (part.length > 2) {
           const dateTab = await page.$(`button:has-text("${part}"), div[role="tab"]:has-text("${part}")`);
           if (dateTab && (await dateTab.isVisible())) {
-            console.log(`Selecting date tab: ${part}`);
+            log(`Selecting date tab: ${part}`);
             await dateTab.click();
             await page.waitForTimeout(2000);
             break;
@@ -287,7 +300,7 @@ export async function performAutomatedCheckout({
       for (const s of slots) {
         if (await s.isVisible()) {
           const slotText = (await s.innerText()).trim().replace(/\n+/g, " ");
-          console.log(`✓ Selecting available slot: "${slotText}"`);
+          log(`✓ Selecting available slot: "${slotText}"`);
           await s.click();
           slotSelected = true;
           await page.waitForTimeout(2000);
@@ -320,19 +333,19 @@ export async function performAutomatedCheckout({
     await waitForLoadingToFinish(page);
 
     // 5. Take screenshot of final review
-    const reviewScreenshot = path.join(SCREENSHOTS_DIR, `checkout-review-${Date.now()}.png`);
+    const reviewScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-review-${Date.now()}.png`));
     await page.screenshot({ path: reviewScreenshot, fullPage: true });
-    console.log(`\n📸 Saved review screenshot: ${reviewScreenshot}`);
+    log(`\n📸 Saved review screenshot: ${reviewScreenshot}`);
 
     // 6. Handle Dry Run vs Final Submission
     if (dryRun) {
-      console.log("\n🔍 [DRY RUN] Reached final review screen. Order was NOT submitted.");
+      log("\n🔍 [DRY RUN] Reached final review screen. Order was NOT submitted.");
       await context.close();
       return { success: true, dryRun: true, screenshot: reviewScreenshot };
     }
 
     // Real Submission
-    console.log("\n💳 Locating 'Submit Order' button...");
+    log("\n💳 Locating 'Submit Order' button...");
     const submitSelectors = [
       'button:has-text("Submit Order")',
       'button:has-text("Place Order")',
@@ -352,11 +365,11 @@ export async function performAutomatedCheckout({
       throw new Error("Could not find 'Submit Order' button on final screen. Please inspect screenshot.");
     }
 
-    console.log("🚀 Submitting order to Fred Meyer...");
+    log("🚀 Submitting order to Fred Meyer...");
     await submitBtn.click();
     await page.waitForTimeout(8000);
 
-    const confirmScreenshot = path.join(SCREENSHOTS_DIR, `order-confirmation-${Date.now()}.png`);
+    const confirmScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `order-confirmation-${Date.now()}.png`));
     await page.screenshot({ path: confirmScreenshot, fullPage: true });
 
     let orderNumber = "UNKNOWN";
@@ -366,16 +379,16 @@ export async function performAutomatedCheckout({
       orderNumber = orderMatch[1];
     }
 
-    console.log(`\n🎉 Order Successfully Placed! Order ID: ${orderNumber}`);
-    console.log(`📸 Confirmation Screenshot: ${confirmScreenshot}\n`);
+    log(`\n🎉 Order Successfully Placed! Order ID: ${orderNumber}`);
+    log(`📸 Confirmation Screenshot: ${confirmScreenshot}\n`);
 
     await context.close();
     return { success: true, orderNumber, screenshot: confirmScreenshot };
   } catch (err) {
-    const errScreenshot = path.join(SCREENSHOTS_DIR, `checkout-error-${Date.now()}.png`);
+    const errScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-error-${Date.now()}.png`));
     try {
       await page.screenshot({ path: errScreenshot, fullPage: true });
-      console.log(`📸 Saved error state screenshot: ${errScreenshot}`);
+      log(`📸 Saved error state screenshot: ${errScreenshot}`);
     } catch {}
     await context.close();
     throw err;
