@@ -3,10 +3,10 @@ import os from "os";
 import path from "path";
 import readline from "readline";
 import { execSync } from "child_process";
-import { firefox } from "playwright";
-import { PROJECT_ROOT, getNetrcCredentials } from "./config.mjs";
+import { chromium } from "playwright";
+import { PROJECT_ROOT, getNetrcCredentials, getConfig } from "./config.mjs";
 
-export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "firefox");
+export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "chrome");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
 
 function log(msg = "") {
@@ -32,7 +32,7 @@ function askQuestion(query) {
 }
 
 const DEFAULT_USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 /**
  * Extracts active cookies for fredmeyer.com / kroger.com from personal Firefox profile
@@ -83,14 +83,14 @@ export function getPersonalFirefoxCookies() {
 }
 
 /**
- * Automatically sync cookies from personal Firefox profile into browser context
+ * Automatically sync cookies into browser context
  */
 export async function syncCookiesToContext(context) {
   const cookies = getPersonalFirefoxCookies();
   if (cookies.length > 0) {
     try {
       await context.addCookies(cookies);
-      log(`✓ Auto-imported ${cookies.length} active session cookies from your personal Firefox profile!`);
+      log(`✓ Auto-imported ${cookies.length} active session cookies from personal profile!`);
       return true;
     } catch (err) {
       log(`Warning: Could not import cookies: ${err.message}`);
@@ -103,45 +103,30 @@ export async function syncCookiesToContext(context) {
  * Automatically dismisses privacy modals, terms updates, cookie banners, and overlays
  */
 export async function dismissModalsAndBanners(page) {
-  const modalCloseSelectors = [
-    '[aria-modal="true"] button[aria-label*="lose" i]',
-    '[aria-modal="true"] button[aria-label*="dismiss" i]',
-    '[aria-modal="true"] button[data-testid*="close" i]',
-    'button[aria-label="Close dialog"]',
-    'button[aria-label="Close Modal"]',
-    'button[aria-label="Close"]',
-    'button[aria-label="close"]',
-    'button[data-testid="close-button"]',
-    '.kds-Modal-closeButton',
-    '#onetrust-accept-btn-handler',
-    'button:has-text("Accept All Cookies")',
-    'button:has-text("Accept All")',
-    'button:has-text("Confirm My Choices")',
-    'button:has-text("I Understand")',
-    'button:has-text("I Agree")',
-    'button:has-text("Got It")',
-    'button:has-text("Agree & Continue")',
-    'button:has-text("Accept & Continue")',
-    'button:has-text("Accept")'
-  ];
+  try {
+    await page.evaluate(() => {
+      // 1. Click all citrus dismissal buttons and modal close buttons
+      const buttons = document.querySelectorAll(
+        '.citrus-DismissalButton, button[aria-label*="Close modal dialog" i], button[aria-label*="close" i], button[data-testid*="close" i], #onetrust-accept-btn-handler, #accept-recommended-btn-handler'
+      );
+      buttons.forEach((b) => {
+        try {
+          b.click();
+        } catch {}
+      });
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    let closedAny = false;
-    for (const sel of modalCloseSelectors) {
-      try {
-        const elements = await page.$$(sel);
-        for (const el of elements) {
-          if (await el.isVisible()) {
-            log(`🛡️  Auto-dismissing modal / privacy banner (${sel})...`);
-            await el.click({ timeout: 2000 });
-            closedAny = true;
-            await page.waitForTimeout(1000);
-          }
+      // 2. Remove any stuck modal backdrops if buttons didn't catch it
+      const modals = document.querySelectorAll('[aria-modal="true"], .kds-Modal, .citrus-Modal');
+      modals.forEach((m) => {
+        if (m.innerText && (m.innerText.includes("Privacy Policy") || m.innerText.includes("Experience"))) {
+          m.remove();
         }
-      } catch {}
-    }
-    if (!closedAny) break;
-  }
+      });
+      const backdrops = document.querySelectorAll('.kds-Modal-backdrop, .citrus-Modal-backdrop, .ReactModal__Overlay');
+      backdrops.forEach((b) => b.remove());
+    });
+    await page.waitForTimeout(500);
+  } catch {}
 }
 
 /**
@@ -152,22 +137,53 @@ async function waitForLoadingToFinish(page) {
     const loadingSpinner = await page.$('text="Loading..."');
     if (loadingSpinner && (await loadingSpinner.isVisible())) {
       log("⏳ Waiting for page loading spinner...");
-      await page.waitForSelector('text="Loading..."', { state: "hidden", timeout: 15000 });
+      await page.waitForSelector('text="Loading..."', { state: "hidden", timeout: 10000 });
     }
   } catch {}
 }
 
 /**
- * Interactive login or cookie sync helper
+ * Automatically handles the Fred Meyer Sign In form if presented
+ */
+async function handleAutoSignIn(page) {
+  const signInField = await page.$("#signInName, input[type='email'], input[name='email']");
+  if (signInField && (await signInField.isVisible())) {
+    const creds = getNetrcCredentials();
+    const config = getConfig();
+    const email = config.email || process.env.FRED_MEYER_EMAIL || "christian.bongiorno@versantmedia.com";
+    const password = creds ? creds.clientSecret : null;
+
+    if (email && password) {
+      log(`🔑 Auto-signing into Fred Meyer account (${email})...`);
+      await signInField.fill(email);
+      const passField = await page.$("#password, input[type='password']");
+      if (passField) {
+        await passField.fill(password);
+      }
+      const continueBtn = await page.$("#continue, button[type='submit'], button:has-text('Sign In')");
+      if (continueBtn) {
+        await continueBtn.click();
+        log("Submitted sign in, waiting for account transition...");
+        await page.waitForTimeout(5000);
+        await dismissModalsAndBanners(page);
+      }
+    }
+  }
+}
+
+/**
+ * 1-time interactive login / session initializer
  */
 export async function openBrowserLogin() {
   ensureDirs();
-  log("\n🦊 Launching Firefox for Fred Meyer session sync...");
+  log("\n🌐 Launching browser for Fred Meyer session setup...");
 
-  const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
+    channel: "chrome",
     viewport: { width: 1280, height: 900 },
-    userAgent: DEFAULT_USER_AGENT
+    userAgent: DEFAULT_USER_AGENT,
+    args: ["--disable-blink-features=AutomationControlled"]
   });
 
   await syncCookiesToContext(context);
@@ -177,13 +193,14 @@ export async function openBrowserLogin() {
   await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(3000);
   await dismissModalsAndBanners(page);
+  await handleAutoSignIn(page);
 
-  log("\n✓ Session initialized! Cookies synced to .browser-profile/firefox.\n");
+  log("\n✓ Session initialized! Profile saved to .browser-profile/chrome.\n");
   await context.close();
 }
 
 /**
- * Automated Checkout Engine via Playwright Firefox
+ * Automated Checkout Engine
  */
 export async function performAutomatedCheckout({
   scheduleDate = null,
@@ -194,12 +211,14 @@ export async function performAutomatedCheckout({
 } = {}) {
   ensureDirs();
 
-  log(`\n🤖 Launching automated Firefox checkout (${modality}, ${scheduleDate || "next available"})...`);
+  log(`\n🤖 Launching automated checkout (${modality}, ${scheduleDate || "next available"})...`);
 
-  const context = await firefox.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless,
+    channel: "chrome",
     viewport: { width: 1280, height: 900 },
-    userAgent: DEFAULT_USER_AGENT
+    userAgent: DEFAULT_USER_AGENT,
+    args: ["--disable-blink-features=AutomationControlled"]
   });
 
   await syncCookiesToContext(context);
@@ -213,27 +232,10 @@ export async function performAutomatedCheckout({
     await page.waitForTimeout(3000);
     await dismissModalsAndBanners(page);
     await waitForLoadingToFinish(page);
+    await handleAutoSignIn(page);
+    await dismissModalsAndBanners(page);
 
-    // 2. Check if login is needed and auto-fill if form is present
-    const emailInput = await page.$('input[type="email"], input[name="email"], #email');
-    if (emailInput && (await emailInput.isVisible())) {
-      const creds = getNetrcCredentials();
-      if (creds && creds.clientId && creds.clientSecret) {
-        log("🔑 Auto-filling login credentials from .netrc...");
-        await emailInput.fill(creds.clientId);
-        const passInput = await page.$('input[type="password"], input[name="password"], #password');
-        if (passInput) {
-          await passInput.fill(creds.clientSecret);
-          const submitBtn = await page.$('button[type="submit"], button:has-text("Sign In")');
-          if (submitBtn) await submitBtn.click();
-          await page.waitForTimeout(5000);
-          await dismissModalsAndBanners(page);
-          await waitForLoadingToFinish(page);
-        }
-      }
-    }
-
-    // 3. Locate Checkout Button
+    // 2. Locate Checkout Button on Cart Page
     log("🔍 Locating checkout button...");
     await dismissModalsAndBanners(page);
 
@@ -242,7 +244,8 @@ export async function performAutomatedCheckout({
       'button:has-text("Check Out")',
       'button:has-text("Claim a Time Slot")',
       'button:has-text("Select a time")',
-      '[data-testid="cart-checkout-button"]'
+      '[data-testid="cart-checkout-button"]',
+      'a[href*="/checkout"]'
     ];
 
     let checkoutBtn = null;
@@ -254,19 +257,21 @@ export async function performAutomatedCheckout({
       }
     }
 
-    if (!checkoutBtn) {
-      log("Navigating directly to checkout flow...");
-      await page.goto("https://www.fredmeyer.com/checkout", { waitUntil: "domcontentloaded" });
-    } else {
+    if (checkoutBtn) {
       log("Clicking checkout button...");
       await checkoutBtn.click();
+    } else {
+      log("Navigating directly to checkout flow...");
+      await page.goto("https://www.fredmeyer.com/checkout", { waitUntil: "domcontentloaded" });
     }
 
     await page.waitForTimeout(4000);
     await dismissModalsAndBanners(page);
     await waitForLoadingToFinish(page);
+    await handleAutoSignIn(page);
+    await dismissModalsAndBanners(page);
 
-    // 4. Select fulfillment date & time slot
+    // 3. Select fulfillment date & time slot
     log("📅 Selecting fulfillment time slot...");
     await dismissModalsAndBanners(page);
 
@@ -285,7 +290,7 @@ export async function performAutomatedCheckout({
       }
     }
 
-    // Pick first available 1-hour time slot
+    // Pick first available time slot
     const slotSelectors = [
       'button[data-testid*="slot-"]:not([disabled])',
       'div[role="radio"]:not([aria-disabled="true"])',
@@ -332,12 +337,12 @@ export async function performAutomatedCheckout({
     await dismissModalsAndBanners(page);
     await waitForLoadingToFinish(page);
 
-    // 5. Take screenshot of final review
+    // 4. Take screenshot of final review
     const reviewScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-review-${Date.now()}.png`));
     await page.screenshot({ path: reviewScreenshot, fullPage: true });
     log(`\n📸 Saved review screenshot: ${reviewScreenshot}`);
 
-    // 6. Handle Dry Run vs Final Submission
+    // 5. Handle Dry Run vs Final Submission
     if (dryRun) {
       log("\n🔍 [DRY RUN] Reached final review screen. Order was NOT submitted.");
       await context.close();
