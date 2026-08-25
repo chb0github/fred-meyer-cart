@@ -1,10 +1,10 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
-import { chromium } from "playwright";
+import { webkit } from "playwright";
 import { PROJECT_ROOT } from "./config.mjs";
 
-export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "chrome");
+export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "webkit");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
 
 function log(msg = "") {
@@ -29,16 +29,13 @@ function askQuestion(query) {
   );
 }
 
-const DEFAULT_USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-
 /**
  * Automatically dismisses privacy modals, terms updates, cookie banners, and overlays
  */
 export async function dismissModalsAndBanners(page) {
   try {
     await page.evaluate(() => {
-      // 1. Click all citrus dismissal buttons and modal close buttons
+      // 1. Click all dismissal buttons and modal close buttons
       const buttons = document.querySelectorAll(
         '.citrus-DismissalButton, button[aria-label*="Close modal dialog" i], button[aria-label*="close" i], button[data-testid*="close" i], #onetrust-accept-btn-handler, #accept-recommended-btn-handler'
       );
@@ -48,7 +45,7 @@ export async function dismissModalsAndBanners(page) {
         } catch {}
       });
 
-      // 2. Remove any stuck modal backdrops if buttons didn't catch it
+      // 2. Remove any stuck modal backdrops
       const modals = document.querySelectorAll('[aria-modal="true"], .kds-Modal, .citrus-Modal');
       modals.forEach((m) => {
         if (m.innerText && (m.innerText.includes("Privacy Policy") || m.innerText.includes("Experience"))) {
@@ -76,19 +73,16 @@ async function waitForLoadingToFinish(page) {
 }
 
 /**
- * 1-time interactive login to save persistent session profile in .browser-profile/chrome
+ * 1-time interactive login to save persistent session profile in .browser-profile/webkit
  */
 export async function openBrowserLogin() {
   ensureDirs();
-  log("\n🌐 Opening Chrome for Fred Meyer login...");
-  log("Please sign in to your Fred Meyer account in the opened window.\n");
+  log("\n🌐 Opening browser for Fred Meyer 1-time login...");
+  log("Please sign in to your Fred Meyer customer account in the opened window.\n");
 
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await webkit.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
-    channel: "chrome",
-    viewport: { width: 1280, height: 900 },
-    userAgent: DEFAULT_USER_AGENT,
-    args: ["--disable-blink-features=AutomationControlled"]
+    viewport: { width: 1280, height: 900 }
   });
 
   const page = context.pages()[0] || (await context.newPage());
@@ -97,13 +91,13 @@ export async function openBrowserLogin() {
   await page.waitForTimeout(3000);
   await dismissModalsAndBanners(page);
 
-  await askQuestion("👉 Once you have signed in and see your cart / account, press [Enter] here to save session: ");
+  await askQuestion("👉 Once you have signed in and see your name / cart, press [Enter] here to save: ");
 
   await dismissModalsAndBanners(page);
   await page.waitForTimeout(2000);
 
   await context.close();
-  log("\n✓ Login session successfully saved to .browser-profile/chrome!\n");
+  log("\n✓ Login session successfully saved to .browser-profile/webkit!\n");
 }
 
 /**
@@ -120,12 +114,9 @@ export async function performAutomatedCheckout({
 
   log(`\n🤖 Launching automated checkout (${modality}, ${scheduleDate || "next available"})...`);
 
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  const context = await webkit.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless,
-    channel: "chrome",
-    viewport: { width: 1280, height: 900 },
-    userAgent: DEFAULT_USER_AGENT,
-    args: ["--disable-blink-features=AutomationControlled"]
+    viewport: { width: 1280, height: 900 }
   });
 
   const page = context.pages()[0] || (await context.newPage());
@@ -134,16 +125,11 @@ export async function performAutomatedCheckout({
     // 1. Navigate to Cart
     log("🛒 Navigating to https://www.fredmeyer.com/cart...");
     await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(4000);
     await dismissModalsAndBanners(page);
     await waitForLoadingToFinish(page);
 
-    // Check if signin is needed
-    if (page.url().includes("signin")) {
-      log("⚠️  Session not authenticated. Please run 'fm auth-browser' once to save login session.");
-    }
-
-    // 2. Locate Checkout Button on Cart Page
+    // 2. Check for "Claim a Time Slot" or "Check Out" on Cart Page
     log("🔍 Locating checkout button...");
     await dismissModalsAndBanners(page);
 
@@ -152,6 +138,7 @@ export async function performAutomatedCheckout({
       'button:has-text("Check Out")',
       'button:has-text("Claim a Time Slot")',
       'button:has-text("Select a time")',
+      'button:has-text("Reserve a Time")',
       '[data-testid="cart-checkout-button"]',
       'a[href*="/checkout"]'
     ];
@@ -166,7 +153,8 @@ export async function performAutomatedCheckout({
     }
 
     if (checkoutBtn) {
-      log("Clicking checkout button...");
+      const btnText = (await checkoutBtn.innerText()).trim().replace(/\n+/g, " ");
+      log(`Clicking checkout button: "${btnText}"...`);
       await checkoutBtn.click();
     } else {
       log("Navigating directly to checkout flow...");
@@ -245,7 +233,7 @@ export async function performAutomatedCheckout({
 
     // 4. Take screenshot of final review
     const reviewScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-review-${Date.now()}.png`));
-    await page.screenshot({ path: reviewScreenshot, fullPage: true });
+    await page.screenshot({ path: reviewScreenshot });
     log(`\n📸 Saved review screenshot: ${reviewScreenshot}`);
 
     // 5. Handle Dry Run vs Final Submission
@@ -281,7 +269,7 @@ export async function performAutomatedCheckout({
     await page.waitForTimeout(8000);
 
     const confirmScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `order-confirmation-${Date.now()}.png`));
-    await page.screenshot({ path: confirmScreenshot, fullPage: true });
+    await page.screenshot({ path: confirmScreenshot });
 
     let orderNumber = "UNKNOWN";
     const bodyText = await page.innerText("body");
@@ -298,7 +286,7 @@ export async function performAutomatedCheckout({
   } catch (err) {
     const errScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-error-${Date.now()}.png`));
     try {
-      await page.screenshot({ path: errScreenshot, fullPage: true });
+      await page.screenshot({ path: errScreenshot });
       log(`📸 Saved error state screenshot: ${errScreenshot}`);
     } catch {}
     await context.close();
