@@ -67,7 +67,7 @@ export function getConfig() {
     storeName: "Fred Meyer - Issaquah",
     storeAddress: "6100 E Lake Sammamish Pkwy Se, Issaquah, 98029",
     redirectUri: "http://localhost:8000/callback",
-    scope: "cart.basic:write product.compact profile.compact"
+    scope: "cart.basic:write"
   };
 
   if (fs.existsSync(CONFIG_FILE)) {
