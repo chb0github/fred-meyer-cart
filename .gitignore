@@ -1,0 +1,14 @@
+# Credentials and sensitive tokens
+.netrc
+.tokens.json
+.env
+*.token
+
+# Local configuration overrides
+.config.json
+
+# Dependencies and OS files
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+.DS_Store

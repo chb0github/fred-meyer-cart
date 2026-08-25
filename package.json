@@ -1,0 +1,18 @@
+{
+  "name": "fm-cart-builder",
+  "version": "1.0.0",
+  "description": "Fred Meyer (Kroger) Shopping List & Cart Automation CLI",
+  "type": "module",
+  "main": "src/cli.mjs",
+  "bin": {
+    "fm": "./src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "auth": "node src/cli.mjs auth",
+    "build-cart": "node src/cli.mjs build sample_list.txt"
+  },
+  "keywords": ["fred-meyer", "kroger", "grocery", "cart", "pickup"],
+  "author": "",
+  "license": "MIT"
+}
