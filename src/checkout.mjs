@@ -1,10 +1,8 @@
 import fs from "fs";
-import os from "os";
 import path from "path";
 import readline from "readline";
-import { execSync } from "child_process";
 import { chromium } from "playwright";
-import { PROJECT_ROOT, getNetrcCredentials, getConfig } from "./config.mjs";
+import { PROJECT_ROOT } from "./config.mjs";
 
 export const BROWSER_PROFILE_DIR = path.join(PROJECT_ROOT, ".browser-profile", "chrome");
 export const SCREENSHOTS_DIR = path.join(PROJECT_ROOT, "screenshots");
@@ -33,71 +31,6 @@ function askQuestion(query) {
 
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-
-/**
- * Extracts active cookies for fredmeyer.com / kroger.com from personal Firefox profile
- */
-export function getPersonalFirefoxCookies() {
-  const baseDir = path.join(os.homedir(), "Library/Application Support/Firefox/Profiles");
-  if (!fs.existsSync(baseDir)) return [];
-
-  let bestCookies = [];
-
-  for (const profileName of fs.readdirSync(baseDir)) {
-    const cookiesDb = path.join(baseDir, profileName, "cookies.sqlite");
-    if (!fs.existsSync(cookiesDb)) continue;
-
-    const tmpDb = `/tmp/fm_cookies_${profileName}.sqlite`;
-    try {
-      fs.copyFileSync(cookiesDb, tmpDb);
-      const query = `SELECT host, name, value, path, isSecure, isHttpOnly, expiry, sameSite FROM moz_cookies WHERE host LIKE '\''%kroger%'\'' OR host LIKE '\''%fredmeyer%'\'';`;
-      const output = execSync(`sqlite3 "${tmpDb}" "${query}"`, { encoding: "utf-8" });
-
-      const cookies = [];
-      const lines = output.split("\n").filter((l) => l.trim().length > 0);
-      for (const line of lines) {
-        const parts = line.split("|");
-        const [host, name, value, cookiePath, isSecure, isHttpOnly, expiry, sameSite] = parts;
-        if (name && value) {
-          const domain = host.startsWith(".") ? host : "." + host;
-          cookies.push({
-            name,
-            value,
-            domain: domain.replace(/^\.\./, "."),
-            path: cookiePath || "/",
-            secure: isSecure === "1",
-            httpOnly: isHttpOnly === "1",
-            expires: expiry ? parseInt(expiry, 10) : undefined,
-            sameSite: sameSite === "1" ? "Lax" : sameSite === "2" ? "Strict" : "None"
-          });
-        }
-      }
-
-      if (cookies.length > bestCookies.length) {
-        bestCookies = cookies;
-      }
-    } catch {}
-  }
-
-  return bestCookies;
-}
-
-/**
- * Automatically sync cookies into browser context
- */
-export async function syncCookiesToContext(context) {
-  const cookies = getPersonalFirefoxCookies();
-  if (cookies.length > 0) {
-    try {
-      await context.addCookies(cookies);
-      log(`✓ Auto-imported ${cookies.length} active session cookies from personal profile!`);
-      return true;
-    } catch (err) {
-      log(`Warning: Could not import cookies: ${err.message}`);
-    }
-  }
-  return false;
-}
 
 /**
  * Automatically dismisses privacy modals, terms updates, cookie banners, and overlays
@@ -143,40 +76,12 @@ async function waitForLoadingToFinish(page) {
 }
 
 /**
- * Automatically handles the Fred Meyer Sign In form if presented
- */
-async function handleAutoSignIn(page) {
-  const signInField = await page.$("#signInName, input[type='email'], input[name='email']");
-  if (signInField && (await signInField.isVisible())) {
-    const creds = getNetrcCredentials();
-    const config = getConfig();
-    const email = config.email || process.env.FRED_MEYER_EMAIL || "christian.bongiorno@versantmedia.com";
-    const password = creds ? creds.clientSecret : null;
-
-    if (email && password) {
-      log(`🔑 Auto-signing into Fred Meyer account (${email})...`);
-      await signInField.fill(email);
-      const passField = await page.$("#password, input[type='password']");
-      if (passField) {
-        await passField.fill(password);
-      }
-      const continueBtn = await page.$("#continue, button[type='submit'], button:has-text('Sign In')");
-      if (continueBtn) {
-        await continueBtn.click();
-        log("Submitted sign in, waiting for account transition...");
-        await page.waitForTimeout(5000);
-        await dismissModalsAndBanners(page);
-      }
-    }
-  }
-}
-
-/**
- * 1-time interactive login / session initializer
+ * 1-time interactive login to save persistent session profile in .browser-profile/chrome
  */
 export async function openBrowserLogin() {
   ensureDirs();
-  log("\n🌐 Launching browser for Fred Meyer session setup...");
+  log("\n🌐 Opening Chrome for Fred Meyer login...");
+  log("Please sign in to your Fred Meyer account in the opened window.\n");
 
   const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
@@ -186,17 +91,19 @@ export async function openBrowserLogin() {
     args: ["--disable-blink-features=AutomationControlled"]
   });
 
-  await syncCookiesToContext(context);
-
   const page = context.pages()[0] || (await context.newPage());
-  log("Navigating to https://www.fredmeyer.com/cart...");
-  await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded" });
+  log("Navigating to https://www.fredmeyer.com/signin?redirectUrl=/cart...");
+  await page.goto("https://www.fredmeyer.com/signin?redirectUrl=/cart", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(3000);
   await dismissModalsAndBanners(page);
-  await handleAutoSignIn(page);
 
-  log("\n✓ Session initialized! Profile saved to .browser-profile/chrome.\n");
+  await askQuestion("👉 Once you have signed in and see your cart / account, press [Enter] here to save session: ");
+
+  await dismissModalsAndBanners(page);
+  await page.waitForTimeout(2000);
+
   await context.close();
+  log("\n✓ Login session successfully saved to .browser-profile/chrome!\n");
 }
 
 /**
@@ -221,8 +128,6 @@ export async function performAutomatedCheckout({
     args: ["--disable-blink-features=AutomationControlled"]
   });
 
-  await syncCookiesToContext(context);
-
   const page = context.pages()[0] || (await context.newPage());
 
   try {
@@ -232,8 +137,11 @@ export async function performAutomatedCheckout({
     await page.waitForTimeout(3000);
     await dismissModalsAndBanners(page);
     await waitForLoadingToFinish(page);
-    await handleAutoSignIn(page);
-    await dismissModalsAndBanners(page);
+
+    // Check if signin is needed
+    if (page.url().includes("signin")) {
+      log("⚠️  Session not authenticated. Please run 'fm auth-browser' once to save login session.");
+    }
 
     // 2. Locate Checkout Button on Cart Page
     log("🔍 Locating checkout button...");
@@ -268,8 +176,6 @@ export async function performAutomatedCheckout({
     await page.waitForTimeout(4000);
     await dismissModalsAndBanners(page);
     await waitForLoadingToFinish(page);
-    await handleAutoSignIn(page);
-    await dismissModalsAndBanners(page);
 
     // 3. Select fulfillment date & time slot
     log("📅 Selecting fulfillment time slot...");
