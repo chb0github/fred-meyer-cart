@@ -42,7 +42,6 @@ export function getPersonalFirefoxCookies() {
         const parts = line.split("|");
         const [host, name, value, cookiePath, isSecure, isHttpOnly, expiry, sameSite] = parts;
         if (name && value) {
-          // Playwright expects clean domains without port
           const domain = host.startsWith(".") ? host : "." + host;
           cookies.push({
             name,
@@ -84,6 +83,67 @@ export async function syncCookiesToContext(context) {
 }
 
 /**
+ * Automatically dismisses privacy modals, terms updates, cookie banners, and overlays
+ */
+export async function dismissModalsAndBanners(page) {
+  const modalCloseSelectors = [
+    // Modal Close (X) buttons
+    '[aria-modal="true"] button[aria-label*="lose" i]',
+    '[aria-modal="true"] button[aria-label*="dismiss" i]',
+    '[aria-modal="true"] button[data-testid*="close" i]',
+    'button[aria-label="Close dialog"]',
+    'button[aria-label="Close Modal"]',
+    'button[aria-label="Close"]',
+    'button[aria-label="close"]',
+    'button[data-testid="close-button"]',
+    '.kds-Modal-closeButton',
+    // OneTrust / Optanon / Cookie banner buttons
+    '#onetrust-accept-btn-handler',
+    'button:has-text("Accept All Cookies")',
+    'button:has-text("Accept All")',
+    'button:has-text("Confirm My Choices")',
+    // Privacy policy / Terms update confirmation buttons
+    'button:has-text("I Understand")',
+    'button:has-text("I Agree")',
+    'button:has-text("Got It")',
+    'button:has-text("Agree & Continue")',
+    'button:has-text("Accept & Continue")',
+    'button:has-text("Accept")'
+  ];
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let closedAny = false;
+    for (const sel of modalCloseSelectors) {
+      try {
+        const elements = await page.$$(sel);
+        for (const el of elements) {
+          if (await el.isVisible()) {
+            console.log(`🛡️  Auto-dismissing privacy banner / modal (${sel})...`);
+            await el.click({ timeout: 2000 });
+            closedAny = true;
+            await page.waitForTimeout(1000);
+          }
+        }
+      } catch {}
+    }
+    if (!closedAny) break;
+  }
+}
+
+/**
+ * Wait for any loading spinner to disappear
+ */
+async function waitForLoadingToFinish(page) {
+  try {
+    const loadingSpinner = await page.$('text="Loading..."');
+    if (loadingSpinner && (await loadingSpinner.isVisible())) {
+      console.log("⏳ Waiting for page loading spinner...");
+      await page.waitForSelector('text="Loading..."', { state: "hidden", timeout: 15000 });
+    }
+  } catch {}
+}
+
+/**
  * Interactive login or cookie sync helper
  */
 export async function openBrowserLogin() {
@@ -96,13 +156,13 @@ export async function openBrowserLogin() {
     userAgent: DEFAULT_USER_AGENT
   });
 
-  // Automatically sync cookies from existing personal profile
   await syncCookiesToContext(context);
 
   const page = context.pages()[0] || (await context.newPage());
   console.log("Navigating to https://www.fredmeyer.com/cart...");
   await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(3000);
+  await dismissModalsAndBanners(page);
 
   console.log("\n✓ Session initialized! Cookies synced to .browser-profile/firefox.\n");
   await context.close();
@@ -138,6 +198,8 @@ export async function performAutomatedCheckout({
     console.log("🛒 Navigating to https://www.fredmeyer.com/cart...");
     await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(3000);
+    await dismissModalsAndBanners(page);
+    await waitForLoadingToFinish(page);
 
     // 2. Check if login is needed and auto-fill if form is present
     const emailInput = await page.$('input[type="email"], input[name="email"], #email');
@@ -152,12 +214,16 @@ export async function performAutomatedCheckout({
           const submitBtn = await page.$('button[type="submit"], button:has-text("Sign In")');
           if (submitBtn) await submitBtn.click();
           await page.waitForTimeout(5000);
+          await dismissModalsAndBanners(page);
+          await waitForLoadingToFinish(page);
         }
       }
     }
 
     // 3. Locate Checkout Button
     console.log("🔍 Locating checkout button...");
+    await dismissModalsAndBanners(page);
+
     const checkoutSelectors = [
       'button:has-text("Proceed to Checkout")',
       'button:has-text("Check Out")',
@@ -183,10 +249,13 @@ export async function performAutomatedCheckout({
       await checkoutBtn.click();
     }
 
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(4000);
+    await dismissModalsAndBanners(page);
+    await waitForLoadingToFinish(page);
 
     // 4. Select fulfillment date & time slot
     console.log("📅 Selecting fulfillment time slot...");
+    await dismissModalsAndBanners(page);
 
     if (scheduleDate) {
       const dateParts = scheduleDate.split(/[\s,]+/);
@@ -229,6 +298,8 @@ export async function performAutomatedCheckout({
     }
 
     // Continue to payment / review
+    await dismissModalsAndBanners(page);
+
     const continueSelectors = [
       'button:has-text("Continue to Payment")',
       'button:has-text("Continue to Review")',
@@ -244,6 +315,9 @@ export async function performAutomatedCheckout({
         break;
       }
     }
+
+    await dismissModalsAndBanners(page);
+    await waitForLoadingToFinish(page);
 
     // 5. Take screenshot of final review
     const reviewScreenshot = path.join(SCREENSHOTS_DIR, `checkout-review-${Date.now()}.png`);
