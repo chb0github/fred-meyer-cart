@@ -660,8 +660,13 @@ function parseCliArgs(rawArgs) {
       process.exit(0);
     } else if (arg === "--empty-cart" || arg === "--clear-cart") {
       options.command = "empty-cart";
-    } else if (["auth", "auth-browser", "checkout", "empty-cart", "clear-cart", "empty", "sync", "store", "search", "help"].includes(arg)) {
-      options.command = (arg === "clear-cart" || arg === "empty") ? "empty-cart" : arg;
+    } else if (arg === "--clear-list" || arg === "--empty-list") {
+      options.command = "clear-list";
+      if (rawArgs[i + 1] && !rawArgs[i + 1].startsWith("-")) {
+        options.list = rawArgs[++i];
+      }
+    } else if (["auth", "auth-browser", "checkout", "empty-cart", "clear-cart", "empty", "clear-list", "empty-list", "sync", "store", "search", "help"].includes(arg)) {
+      options.command = (arg === "clear-cart" || arg === "empty") ? "empty-cart" : (arg === "empty-list" ? "clear-list" : arg);
       if (arg === "search") {
         options.searchQuery = rawArgs.slice(i + 1).join(" ");
         break;
@@ -670,7 +675,7 @@ function parseCliArgs(rawArgs) {
         options.zip = rawArgs[i + 1];
         break;
       }
-      if (arg === "sync" && rawArgs[i + 1] && !rawArgs[i + 1].startsWith("-")) {
+      if ((arg === "sync" || arg === "clear-list" || arg === "empty-list") && rawArgs[i + 1] && !rawArgs[i + 1].startsWith("-")) {
         options.list = rawArgs[++i];
       }
     } else if (!arg.startsWith("-") && !options.list) {
@@ -679,6 +684,13 @@ function parseCliArgs(rawArgs) {
   }
 
   return options;
+}
+
+function cmdClearList(targetFile = "sample_list.csv") {
+  const filePath = path.resolve(targetFile || "sample_list.csv");
+  const header = "item,quantity,notes,productId,price,size\n";
+  fs.writeFileSync(filePath, header, "utf-8");
+  log(`✓ Cleared grocery shopping list: ${filePath}`);
 }
 
 async function main() {
@@ -697,6 +709,10 @@ async function main() {
   }
   if (options.command === "auth-browser") {
     await openBrowserLogin();
+    return;
+  }
+  if (options.command === "clear-list") {
+    cmdClearList(options.list);
     return;
   }
   if (options.command === "empty-cart") {
@@ -736,12 +752,14 @@ ${ANSI.bold}Usage:${ANSI.reset}
   fm --list <file.csv> --pickup <date> --checkout [options]
   fm --list <file.csv> --delivery <date> --checkout [options]
   fm empty-cart
+  fm clear-list [file.csv]
 
 ${ANSI.bold}Hands-Off Automation Options:${ANSI.reset}
   ${ANSI.cyan}--checkout, -c${ANSI.reset}          Automate final checkout (selects time slot, payment & submits)
   ${ANSI.cyan}--dry-run, -d${ANSI.reset}           Preview & take review screenshot without placing order
   ${ANSI.cyan}--headed${ANSI.reset}                Run browser visually instead of headless mode
   ${ANSI.cyan}empty-cart${ANSI.reset}              Remove all items and clear the active Fred Meyer cart
+  ${ANSI.cyan}clear-list${ANSI.reset}              Reset the local grocery CSV shopping list to clean header
 
 ${ANSI.bold}Piping & Shell Integration:${ANSI.reset}
   All informational logs and tables are routed to stderr.
