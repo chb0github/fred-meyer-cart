@@ -34,6 +34,10 @@ function askQuestion(query) {
   );
 }
 
+/**
+ * Flexible date parser for relative terms ('today', 'tomorrow', 'friday', '+2d', 'in 3 days')
+ * and absolute date formats ('09/10', '09/10/2026', '2026-09-10')
+ */
 function parseScheduleDate(input) {
   if (!input) return null;
   const str = input.trim().toLowerCase();
@@ -48,7 +52,29 @@ function parseScheduleDate(input) {
     return tmrw.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   }
 
-  // Match MM/DD or MM-DD or MM/DD/YY
+  // Handle +Nd or "in N days" (e.g. "+2d", "in 3 days")
+  const relDaysMatch = str.match(/^(?:\+)?(\d+)\s*(?:d|days?)?$/i) || str.match(/^in\s+(\d+)\s+days?$/i);
+  if (relDaysMatch && !str.includes("/")) {
+    const days = parseInt(relDaysMatch[1], 10);
+    const target = new Date(now);
+    target.setDate(target.getDate() + days);
+    return target.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  }
+
+  // Handle weekdays: monday, tuesday, friday, next monday, etc.
+  const daysOfWeek = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const cleanDay = str.replace(/^next\s+/, "");
+  const targetDayIdx = daysOfWeek.indexOf(cleanDay);
+  if (targetDayIdx !== -1) {
+    const currentDayIdx = now.getDay();
+    let diff = targetDayIdx - currentDayIdx;
+    if (diff <= 0 || str.startsWith("next ")) diff += 7;
+    const target = new Date(now);
+    target.setDate(target.getDate() + diff);
+    return target.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  }
+
+  // Match MM/DD or MM-DD or MM/DD/YYYY
   const m = str.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?$/);
   if (m) {
     const month = parseInt(m[1], 10);
@@ -57,14 +83,10 @@ function parseScheduleDate(input) {
     if (year < 100) year += 2000;
     const dateObj = new Date(year, month - 1, day);
     if (!isNaN(dateObj.getTime())) {
-      return dateObj.toLocaleDateString("en-US", {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-        year: "numeric"
-      });
+      return dateObj.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
     }
   }
+
   return input.trim();
 }
 
@@ -641,12 +663,12 @@ ${ANSI.bold}Usage:${ANSI.reset}
 
 ${ANSI.bold}Core Options:${ANSI.reset}
   ${ANSI.cyan}--list, -l <path>${ANSI.reset}          Path to shopping list CSV / TXT
-  ${ANSI.cyan}--pickup, -p <date>${ANSI.reset}        Set target pickup date (e.g. 09/10, tomorrow)
-  ${ANSI.cyan}--delivery [date]${ANSI.reset}          Submit cart for DELIVERY instead of Pickup
-  ${ANSI.cyan}--dry-run, -d${ANSI.reset}              Preview matched items, prices & total without pushing to cart
+  ${ANSI.cyan}--pickup, -p <date>${ANSI.reset}        Set pickup date (today, tomorrow, friday, +2d, 09/10)
+  ${ANSI.cyan}--delivery [date]${ANSI.reset}          Set delivery date (today, tomorrow, friday, +2d, 09/10)
+  ${ANSI.cyan}--dry-run, -d${ANSI.reset}              Preview matches without pushing to cart
   ${ANSI.cyan}--store, -s <id|zip>${ANSI.reset}       Override store location (e.g. -s 98029)
   ${ANSI.cyan}--prefer <brand>${ANSI.reset}          Brand priority: store-brand | organic | lowest-price | name-brand
-  ${ANSI.cyan}--budget, -b <dollars>${ANSI.reset}    Budget limit warning threshold
+  ${ANSI.cyan}--budget, -b <dollars>${ANSI.reset}    Budget threshold warning
   ${ANSI.cyan}--format <table|json>${ANSI.reset}     Output format (default: table)
   ${ANSI.cyan}--sync${ANSI.reset}                    Write back resolved Product IDs and prices to CSV
   ${ANSI.cyan}--interactive, -i${ANSI.reset}          Force interactive mode
