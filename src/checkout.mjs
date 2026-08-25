@@ -16,19 +16,6 @@ function ensureDirs() {
   if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 }
 
-function askQuestion(query) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stderr
-  });
-  return new Promise((resolve) =>
-    rl.question(query, (ans) => {
-      rl.close();
-      resolve(ans.trim());
-    })
-  );
-}
-
 /**
  * Automatically dismisses privacy modals, terms updates, cookie banners, and overlays
  */
@@ -73,12 +60,13 @@ async function waitForLoadingToFinish(page) {
 }
 
 /**
- * 1-time interactive login to save persistent session profile in .browser-profile
+ * 1-time interactive login: opens browser, detects when login finishes, and auto-saves profile
  */
 export async function openBrowserLogin() {
   ensureDirs();
   log("\n🌐 Opening browser for Fred Meyer 1-time login...");
-  log("Please sign in to your Fred Meyer customer account in the opened window.\n");
+  log("👉 Please sign in to your Fred Meyer account in the opened Chrome window.");
+  log("⏳ Automation is watching the window and will automatically detect when you are signed in!\n");
 
   const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
@@ -87,18 +75,41 @@ export async function openBrowserLogin() {
   });
 
   const page = context.pages()[0] || (await context.newPage());
-  log("Navigating to https://www.fredmeyer.com/signin?redirectUrl=/cart...");
   await page.goto("https://www.fredmeyer.com/signin?redirectUrl=/cart", { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(3000);
-  await dismissModalsAndBanners(page);
 
-  await askQuestion("👉 Once you have signed in and see your cart / account, press [Enter] here to save session: ");
+  // Poll until user finishes sign-in
+  let signedIn = false;
+  for (let i = 0; i < 120; i++) {
+    await page.waitForTimeout(1500);
+    await dismissModalsAndBanners(page);
 
-  await dismissModalsAndBanners(page);
-  await page.waitForTimeout(2000);
+    const currentUrl = page.url();
+    if (
+      !currentUrl.includes("signin") &&
+      !currentUrl.includes("login.kroger.com") &&
+      (currentUrl.includes("fredmeyer.com/cart") ||
+        currentUrl.includes("fredmeyer.com/account") ||
+        currentUrl.includes("fredmeyer.com/"))
+    ) {
+      // Check if user name or sign-in state appears in page
+      const pageText = await page.innerText("body").catch(() => "");
+      if (pageText.includes("Sign Out") || pageText.includes("Christian") || pageText.includes("Your Cart")) {
+        signedIn = true;
+        break;
+      }
+    }
+  }
 
-  await context.close();
-  log("\n✓ Login session successfully saved to .browser-profile!\n");
+  if (signedIn) {
+    log("\n🎉 Login detected successfully!");
+    await dismissModalsAndBanners(page);
+    await page.waitForTimeout(2000);
+    await context.close();
+    log("✓ Session permanently saved to .browser-profile!\n");
+  } else {
+    log("\n⏳ Timed out waiting for login. Closing browser...");
+    await context.close();
+  }
 }
 
 /**
