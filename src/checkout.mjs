@@ -141,6 +141,47 @@ async function waitForLoadingToFinish(page) {
 }
 
 /**
+ * Standalone command to empty all items from the Fred Meyer cart
+ */
+export async function emptyCartStandalone({ headless = true } = {}) {
+  ensureDirs();
+  log("\n🛒 Opening cart to remove all items...");
+
+  const cookies = getPersonalFirefoxCookies();
+  if (cookies.length === 0) {
+    throw new Error(
+      "No active Fred Meyer session cookies found in Firefox. Please open Firefox and sign in to fredmeyer.com."
+    );
+  }
+
+  const browser = await webkit.launch({ headless });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+  });
+
+  await context.addCookies(cookies);
+  const page = await context.newPage();
+
+  try {
+    await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
+    await page.waitForTimeout(4000);
+    await dismissModalsAndBanners(page);
+
+    await clearCart(page);
+
+    await page.waitForTimeout(2000);
+    log("✓ Your Fred Meyer cart has been emptied.\n");
+    await browser.close();
+    return { success: true };
+  } catch (err) {
+    await browser.close();
+    throw err;
+  }
+}
+
+/**
  * Open Firefox for 1-time login check
  */
 export async function openBrowserLogin() {

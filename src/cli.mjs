@@ -8,7 +8,7 @@ import { authenticateCustomer, getCustomerToken } from "./auth.mjs";
 import { searchLocations, searchProducts, addToCart } from "./krogerApi.mjs";
 import { parseShoppingList, parseSingleItem, serializeToCsv } from "./parser.mjs";
 import { matchShoppingList, matchItem } from "./matcher.mjs";
-import { openBrowserLogin, performAutomatedCheckout } from "./checkout.mjs";
+import { openBrowserLogin, performAutomatedCheckout, emptyCartStandalone } from "./checkout.mjs";
 
 const ANSI = {
   reset: "\x1b[0m",
@@ -658,8 +658,10 @@ function parseCliArgs(rawArgs) {
       if (fs.existsSync(TOKEN_FILE)) fs.unlinkSync(TOKEN_FILE);
       log("✓ Cleared local token cache.");
       process.exit(0);
-    } else if (["auth", "auth-browser", "checkout", "sync", "store", "search", "help"].includes(arg)) {
-      options.command = arg;
+    } else if (arg === "--empty-cart" || arg === "--clear-cart") {
+      options.command = "empty-cart";
+    } else if (["auth", "auth-browser", "checkout", "empty-cart", "clear-cart", "empty", "sync", "store", "search", "help"].includes(arg)) {
+      options.command = (arg === "clear-cart" || arg === "empty") ? "empty-cart" : arg;
       if (arg === "search") {
         options.searchQuery = rawArgs.slice(i + 1).join(" ");
         break;
@@ -697,6 +699,10 @@ async function main() {
     await openBrowserLogin();
     return;
   }
+  if (options.command === "empty-cart") {
+    await emptyCartStandalone({ headless: !options.headed });
+    return;
+  }
   if (options.command === "checkout") {
     const res = await performAutomatedCheckout({
       scheduleDate: parseScheduleDate(options.pickup || options.deliveryDate),
@@ -729,11 +735,13 @@ ${ANSI.bold}Usage:${ANSI.reset}
   fm [options]
   fm --list <file.csv> --pickup <date> --checkout [options]
   fm --list <file.csv> --delivery <date> --checkout [options]
+  fm empty-cart
 
 ${ANSI.bold}Hands-Off Automation Options:${ANSI.reset}
   ${ANSI.cyan}--checkout, -c${ANSI.reset}          Automate final checkout (selects time slot, payment & submits)
   ${ANSI.cyan}--dry-run, -d${ANSI.reset}           Preview & take review screenshot without placing order
   ${ANSI.cyan}--headed${ANSI.reset}                Run browser visually instead of headless mode
+  ${ANSI.cyan}empty-cart${ANSI.reset}              Remove all items and clear the active Fred Meyer cart
 
 ${ANSI.bold}Piping & Shell Integration:${ANSI.reset}
   All informational logs and tables are routed to stderr.
