@@ -46,8 +46,8 @@ export function parseSingleItem(rawText, inheritedNote = null, explicitProductId
       quantity = parseInt(suffixQtyMatch[2], 10);
     }
 
-    // Pattern: "2 carrots", "3 apples", "1 package baby spinach"
-    const prefixQtyMatch = term.match(/^(\d+)\s+(?:packages?|packs?|bags?|cans?|bottles?|bunches?|ct|count|lbs?|pounds?)?\s*(?:of\s+)?(.*)$/i);
+    // Pattern: "2 carrots", "3 apples", "1 package baby spinach", "2 gal milk"
+    const prefixQtyMatch = term.match(/^(\d+)\s+(?:packages?|packs?|bags?|cans?|bottles?|bunches?|ct|count|lbs?|pounds?|gallons?|gals?)\s*(?:of\s+)?(.*)$/i);
     if (prefixQtyMatch && !term.match(/^\d+\s+(?:white\s+eggs|eggs|oz|lb|g)\b/i)) {
       const parsedQty = parseInt(prefixQtyMatch[1], 10);
       const remainder = prefixQtyMatch[2].trim();
@@ -156,11 +156,19 @@ function parsePlainText(content) {
   return parsedItems;
 }
 
+import fs from "fs";
+
 /**
- * Parse either CSV or Plain Text list
+ * Parse either CSV or Plain Text list (accepts either string content or file path)
  */
-export function parseShoppingList(content, filePath = "") {
-  const isCsv = filePath.toLowerCase().endsWith(".csv") || (content.includes(",") && content.split("\n")[0].toLowerCase().includes("item"));
+export function parseShoppingList(contentOrPath, filePath = "") {
+  let content = contentOrPath;
+  let file = filePath;
+  if (typeof contentOrPath === "string" && fs.existsSync(contentOrPath)) {
+    content = fs.readFileSync(contentOrPath, "utf-8");
+    file = contentOrPath;
+  }
+  const isCsv = file.toLowerCase().endsWith(".csv") || (content.includes(",") && content.split("\n")[0].toLowerCase().includes("item"));
   if (isCsv) {
     return parseCsv(content);
   }
