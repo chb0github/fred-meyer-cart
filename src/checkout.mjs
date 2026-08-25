@@ -16,6 +16,60 @@ function ensureDirs() {
 }
 
 /**
+ * Natural random delay between min and max milliseconds
+ */
+export async function naturalDelay(minMs = 1200, maxMs = 2800) {
+  const duration = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  return new Promise((resolve) => setTimeout(resolve, duration));
+}
+
+/**
+ * Simulates gentle human scrolling and mouse wandering
+ */
+export async function humanWander(page) {
+  try {
+    const scrollDelta = (Math.random() > 0.5 ? 1 : -1) * (Math.floor(Math.random() * 120) + 80);
+    await page.mouse.wheel(0, scrollDelta);
+    await naturalDelay(300, 600);
+    await page.mouse.wheel(0, -scrollDelta * 0.8);
+    await naturalDelay(200, 500);
+  } catch {}
+}
+
+/**
+ * Simulates natural mouse movement and hover over an element before clicking
+ */
+export async function humanClick(page, selectorOrElement) {
+  try {
+    const el = typeof selectorOrElement === "string" ? await page.$(selectorOrElement) : selectorOrElement;
+    if (!el) return false;
+
+    await el.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+    await naturalDelay(250, 550);
+
+    const box = await el.boundingBox();
+    if (box) {
+      const targetX = box.x + box.width * (0.35 + Math.random() * 0.3);
+      const targetY = box.y + box.height * (0.35 + Math.random() * 0.3);
+
+      await page.mouse.move(targetX, targetY, { steps: Math.floor(Math.random() * 8) + 10 });
+      await naturalDelay(150, 350);
+
+      await page.mouse.down();
+      await naturalDelay(60, 140);
+      await page.mouse.up();
+      await naturalDelay(300, 600);
+      return true;
+    } else {
+      await el.click({ delay: Math.floor(Math.random() * 80) + 40 });
+      return true;
+    }
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
  * Extracts active session cookies directly from personal Firefox profile
  */
 export function getPersonalFirefoxCookies() {
@@ -46,7 +100,7 @@ export function getPersonalFirefoxCookies() {
             name,
             value,
             domain,
-            path: cookiePath || "/",
+            path: (cookiePath && cookiePath.startsWith("/")) ? cookiePath : "/",
             secure: isSecure === "1",
             httpOnly: isHttpOnly === "1",
             expires: expiry ? Math.floor(parseInt(expiry, 10) / 1000) : undefined,
@@ -70,7 +124,6 @@ export function getPersonalFirefoxCookies() {
 export async function dismissModalsAndBanners(page) {
   try {
     await page.evaluate(() => {
-      // 1. Click all dismissal buttons and modal close buttons
       const buttons = document.querySelectorAll(
         '.citrus-DismissalButton, button[aria-label*="Close modal dialog" i], button[aria-label*="close" i], button[data-testid*="close" i], #onetrust-accept-btn-handler, #accept-recommended-btn-handler'
       );
@@ -80,7 +133,6 @@ export async function dismissModalsAndBanners(page) {
         } catch {}
       });
 
-      // 2. Remove any stuck modal backdrops
       const modals = document.querySelectorAll('[aria-modal="true"], .kds-Modal, .citrus-Modal');
       modals.forEach((m) => {
         if (m.innerText && (m.innerText.includes("Privacy Policy") || m.innerText.includes("Experience"))) {
@@ -90,52 +142,36 @@ export async function dismissModalsAndBanners(page) {
       const backdrops = document.querySelectorAll('.kds-Modal-backdrop, .citrus-Modal-backdrop, .ReactModal__Overlay');
       backdrops.forEach((b) => b.remove());
     });
-    await page.waitForTimeout(500);
+    await naturalDelay(300, 600);
   } catch {}
 }
 
 /**
- * Removes all items from the active Fred Meyer cart
+ * Ensures the target store (Issaquah 98029) is selected as active modality in the browser
  */
-export async function clearCart(page) {
+export async function ensureStoreSelected(page, zip = "98029") {
   try {
-    log("🧹 Clearing existing items from cart...");
-    await dismissModalsAndBanners(page);
-    
-    // Find all remove/delete buttons
-    const removeSelectors = [
-      'button[aria-label*="Remove" i]',
-      'button[data-testid*="remove" i]',
-      'button:has-text("Remove")',
-      'button:has-text("Save for Later")'
-    ];
+    const modBtn = await page.$('[data-testid="CurrentModality-button"], button:has-text("Pickup at")');
+    if (modBtn) {
+      const aria = await modBtn.getAttribute("aria-label");
+      if (!aria || !aria.toLowerCase().includes("issaquah")) {
+        log(`🏬 Setting store location to Issaquah (${zip})...`);
+        await humanClick(page, modBtn);
+        await naturalDelay(1200, 2000);
 
-    for (const sel of removeSelectors) {
-      const btns = await page.$$(sel);
-      for (const btn of btns) {
-        try {
-          if (await btn.isVisible()) {
-            await btn.click();
-            await page.waitForTimeout(400);
+        const searchInput = await page.$('input[placeholder*="ZIP" i], input[aria-label*="Search" i], [data-testid="postal-code-input"]');
+        if (searchInput) {
+          await searchInput.fill(zip);
+          await page.keyboard.press("Enter");
+          await naturalDelay(2000, 3000);
+
+          const setStoreBtn = await page.$('button:has-text("Shop pickup"), button:has-text("Select Store"), button:has-text("Set as Preferred")');
+          if (setStoreBtn) {
+            await humanClick(page, setStoreBtn);
+            await naturalDelay(2500, 3500);
           }
-        } catch {}
+        }
       }
-    }
-    log("✓ Existing items cleared.");
-  } catch (err) {
-    log(`⚠️ Could not clear cart: ${err.message}`);
-  }
-}
-
-/**
- * Wait for any loading spinner to disappear
- */
-async function waitForLoadingToFinish(page) {
-  try {
-    const loadingSpinner = await page.$('text="Loading..."');
-    if (loadingSpinner && (await loadingSpinner.isVisible())) {
-      log("⏳ Waiting for page loading spinner...");
-      await page.waitForSelector('text="Loading..."', { state: "hidden", timeout: 10000 });
     }
   } catch {}
 }
@@ -166,15 +202,36 @@ export async function emptyCartStandalone({ headless = true } = {}) {
 
   try {
     await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.waitForTimeout(4000);
+    await naturalDelay(2000, 3500);
     await dismissModalsAndBanners(page);
+    await ensureStoreSelected(page, "98029");
+    await humanWander(page);
 
-    await clearCart(page);
+    const tryAgain = await page.$('button:has-text("Try Again")');
+    if (tryAgain && await tryAgain.isVisible()) {
+      await humanClick(page, tryAgain);
+      await naturalDelay(2500, 4000);
+    }
 
-    await page.waitForTimeout(2000);
-    log("✓ Your Fred Meyer cart has been emptied.\n");
+    let removedCount = 0;
+    for (let i = 0; i < 20; i++) {
+      await dismissModalsAndBanners(page);
+      const removeButtons = await page.$$('button[aria-label*="Remove" i], button[data-testid*="remove" i], button:has-text("Remove"), [data-testid="cart-item-delete-button"]');
+      if (removeButtons.length === 0) break;
+      for (const btn of removeButtons) {
+        try {
+          if (await btn.isVisible()) {
+            await humanClick(page, btn);
+            removedCount++;
+            await naturalDelay(400, 800);
+          }
+        } catch {}
+      }
+    }
+
+    log(`✓ Cleared ${removedCount} items from Fred Meyer cart.\n`);
     await browser.close();
-    return { success: true };
+    return { success: true, count: removedCount };
   } catch (err) {
     await browser.close();
     throw err;
@@ -227,21 +284,22 @@ export async function performAutomatedCheckout({
   });
 
   await context.addCookies(cookies);
-
   const page = await context.newPage();
 
   try {
     // 1. Navigate to Cart
     log("🛒 Navigating to https://www.fredmeyer.com/cart...");
     await page.goto("https://www.fredmeyer.com/cart", { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.waitForTimeout(4000);
+    await naturalDelay(2000, 3500);
     await dismissModalsAndBanners(page);
-    await waitForLoadingToFinish(page);
+
+    // Ensure store is set to Issaquah
+    await ensureStoreSelected(page, "98029");
+    await humanWander(page);
+    await dismissModalsAndBanners(page);
 
     // 2. Check for "Claim a Time Slot" or "Check Out" on Cart Page
     log("🔍 Locating checkout button...");
-    await dismissModalsAndBanners(page);
-
     const checkoutSelectors = [
       'button:has-text("Proceed to Checkout")',
       'button:has-text("Check Out")',
@@ -264,20 +322,18 @@ export async function performAutomatedCheckout({
     if (checkoutBtn) {
       const btnText = (await checkoutBtn.innerText()).trim().replace(/\n+/g, " ");
       log(`Clicking checkout button: "${btnText}"...`);
-      await checkoutBtn.click();
+      await humanClick(page, checkoutBtn);
     } else {
       log("Navigating directly to checkout flow...");
       await page.goto("https://www.fredmeyer.com/checkout", { waitUntil: "domcontentloaded" });
     }
 
-    await page.waitForTimeout(4000);
+    await naturalDelay(3000, 4500);
     await dismissModalsAndBanners(page);
-    await waitForLoadingToFinish(page);
+    await humanWander(page);
 
     // 3. Select fulfillment date & time slot
     log("📅 Selecting fulfillment time slot...");
-    await dismissModalsAndBanners(page);
-
     if (scheduleDate) {
       const dateParts = scheduleDate.split(/[\s,]+/);
       for (const part of dateParts) {
@@ -285,8 +341,8 @@ export async function performAutomatedCheckout({
           const dateTab = await page.$(`button:has-text("${part}"), div[role="tab"]:has-text("${part}")`);
           if (dateTab && (await dateTab.isVisible())) {
             log(`Selecting date tab: ${part}`);
-            await dateTab.click();
-            await page.waitForTimeout(2000);
+            await humanClick(page, dateTab);
+            await naturalDelay(1500, 2500);
             break;
           }
         }
@@ -309,9 +365,9 @@ export async function performAutomatedCheckout({
         if (await s.isVisible()) {
           const slotText = (await s.innerText()).trim().replace(/\n+/g, " ");
           log(`✓ Selecting available slot: "${slotText}"`);
-          await s.click();
+          await humanClick(page, s);
           slotSelected = true;
-          await page.waitForTimeout(2000);
+          await naturalDelay(1500, 2500);
           break;
         }
       }
@@ -331,18 +387,17 @@ export async function performAutomatedCheckout({
     for (const sel of continueSelectors) {
       const btn = await page.$(sel);
       if (btn && (await btn.isVisible())) {
-        await btn.click();
-        await page.waitForTimeout(4000);
+        await humanClick(page, btn);
+        await naturalDelay(3000, 4500);
         break;
       }
     }
 
     await dismissModalsAndBanners(page);
-    await waitForLoadingToFinish(page);
 
     // 4. Take screenshot of final review
     const reviewScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-review-${Date.now()}.png`));
-    await page.screenshot({ path: reviewScreenshot, animations: "disabled" });
+    await page.screenshot({ path: reviewScreenshot, animations: "disabled", timeout: 8000 });
     log(`\n📸 Saved review screenshot: ${reviewScreenshot}`);
 
     // 5. Handle Dry Run vs Final Submission
@@ -374,11 +429,11 @@ export async function performAutomatedCheckout({
     }
 
     log("🚀 Submitting order to Fred Meyer...");
-    await submitBtn.click();
-    await page.waitForTimeout(8000);
+    await humanClick(page, submitBtn);
+    await naturalDelay(6000, 9000);
 
     const confirmScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `order-confirmation-${Date.now()}.png`));
-    await page.screenshot({ path: confirmScreenshot, animations: "disabled" });
+    await page.screenshot({ path: confirmScreenshot, animations: "disabled", timeout: 8000 });
 
     let orderNumber = "UNKNOWN";
     const bodyText = await page.innerText("body");
@@ -395,7 +450,7 @@ export async function performAutomatedCheckout({
   } catch (err) {
     const errScreenshot = path.resolve(path.join(SCREENSHOTS_DIR, `checkout-error-${Date.now()}.png`));
     try {
-      await page.screenshot({ path: errScreenshot, animations: "disabled" });
+      await page.screenshot({ path: errScreenshot, animations: "disabled", timeout: 8000 });
       log(`📸 Saved error state screenshot: ${errScreenshot}`);
     } catch {}
     await browser.close();
