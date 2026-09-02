@@ -458,8 +458,20 @@ async function main() {
     cmdListClear(options.list);
     return;
   }
-  if (options.command === "auth-browser") {
-    await openBrowserLogin();
+  if (options.command === "auth" || options.command === "auth-browser") {
+    log(`\n${ANSI.bold}🔐 Starting Fred Meyer customer login (OAuth) ...${ANSI.reset}`);
+    log(`   A local listener is starting on port ${ANSI.cyan}8000${ANSI.reset} — keep this terminal open until you see the green ✓ page in your browser.\n`);
+    try {
+      const accessToken = await authenticateCustomer();
+      if (accessToken) {
+        log(`\n${ANSI.green}${ANSI.bold}✓ Customer login successful!${ANSI.reset}`);
+        log(`${ANSI.dim}   Access token saved to ${TOKEN_FILE}. You can now close the browser tab.${ANSI.reset}\n`);
+      }
+    } catch (err) {
+      log(`\n${ANSI.red}${ANSI.bold}✗ Authentication failed:${ANSI.reset} ${err.message}`);
+      log(`${ANSI.dim}   Hints: ensure your Kroger app has Redirect URI http://localhost:8000/callback registered and the cart.basic:write scope enabled. Then re-run.${ANSI.reset}\n`);
+      process.exit(1);
+    }
     return;
   }
   if (options.command === "help" || rawArgs.length === 0) {

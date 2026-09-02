@@ -10,7 +10,11 @@
   "scripts": {
     "start": "node src/cli.mjs",
     "auth": "node src/cli.mjs auth",
-    "build-cart": "node src/cli.mjs build sample_list.txt"
+    "build-cart": "node src/cli.mjs build sample_list.txt",
+    "mcp": "node src/mcp-server.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [
     "fred-meyer",

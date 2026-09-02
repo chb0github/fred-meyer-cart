@@ -4,6 +4,60 @@ A fast Node.js CLI tool to parse grocery shopping lists, fuzzy match live Fred M
 
 ---
 
+## 🤖 Use as an MCP Server (LM Studio & other MCP clients)
+
+This project ships a stdio-based [Model Context Protocol](https://modelcontextprotocol.io) server at [`src/mcp-server.mjs`](file:///Users/dmiles/lmstudiofiles/fred-meyer-cart/src/mcp-server.mjs). It exposes the CLI's functionality as tools an LLM can call directly — no new npm packages required (Node 18+ builtins only).
+
+| Tool | What it does | Mutates? |
+|---|---|---|
+| `fm_search_products` | Keyword search of live Fred Meyer inventory (price/size/stock) | No |
+| `fm_get_product` | Look up a product by its Kroger Product ID / UPC | No |
+| `fm_search_locations` | Find store IDs near a ZIP code | No |
+| `fm_match_shopping_list` | Fuzzy-match a list to live products with prices & estimated total (dry run) | No |
+| `fm_cart_status` | Show items in the staged cart | No |
+| `fm_auth_status` | Check API credentials + customer login state | No |
+| `fm_cart_add` | Match items and push them into your online Fred Meyer cart | **Yes** |
+| `fm_clear_cart` | Clear local cart (optionally empty the online cart via browser automation) | **Yes** |
+| `fm_checkout` | Automated slot reservation & order review — **dry run by default**; `dryRun:false` places the order | Optional |
+
+### Setup in LM Studio
+
+1. Confirm Node 18+ and get its absolute path: `which node` (e.g. `/opt/homebrew/bin/node`).
+2. In LM Studio open **Developer → MCP** (in some versions: **Settings → MCP Servers**) and click **Add Server / New Custom Server**.
+3. Fill in:
+   - **Name**: `Fred Meyer Cart`
+   - **Command**: the full path to node, e.g. `/opt/homebrew/bin/node`
+   - **Args** (one per line): `/Users/dmiles/lmstudiofiles/fred-meyer-cart/src/mcp-server.mjs`
+4. Save and refresh — the nine `fm_*` tools should appear in your tool list; enable them for the chat/model profile you want to use.
+
+That's it. Just talk to it: *“Price sample_list.csv at Fred Meyer,”* *“Add burrata and 18 white eggs to my pickup cart,”* *“What’s in my FM cart?”* The model will pick the right tools on its own.
+
+> If you prefer editing LM Studio's MCP config file directly, the equivalent entry is:
+>
+> ```json
+> {
+>   "mcpServers": {
+>     "fred-meyer-cart": {
+>       "command": "/opt/homebrew/bin/node",
+>       "args": ["/Users/dmiles/lmstudiofiles/fred-meyer-cart/src/mcp-server.mjs"]
+>     }
+>   }
+> }
+> ```
+
+### Prerequisites (same as the CLI)
+
+- **Credentials for every tool**: a `.netrc` file in this project root (or `~/.netrc`, or env vars) with:
+  ```
+  machine api.kroger.com login <YOUR_CLIENT_ID> password <YOUR_CLIENT_SECRET>
+  ```
+- **For cart mutations** (`fm_cart_add`, `fm_checkout`): authenticate once from a terminal — `node src/cli.mjs auth-browser`. Tokens then auto-refresh in the background (`.tokens.json`).
+- **Only for `fm_checkout` and remote `fm_clear_cart`**: install Playwright + WebKit — `npm install && npx playwright install webkit`. Everything else works without any `npm install`.
+
+> **Safety built into the server:** read-only tools can't change anything; `fm_checkout` defaults to a **dry run** (screenshot of the review page, no order placed) until you explicitly pass `dryRun=false`, and cart operations never block on interactive prompts (stdin belongs to the MCP client).
+
+---
+
 ## 🔒 Zero Credentials on the CLI
 
 **No username, password, or API secrets are ever passed on the CLI.**
